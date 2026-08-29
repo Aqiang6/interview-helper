@@ -10,60 +10,6 @@ from pydantic import BaseModel, Field
 
 
 # ═══════════════════════════════════════════
-#  语义缓存相关模型
-# ═══════════════════════════════════════════
-
-class CacheEntry(BaseModel):
-    """缓存条目"""
-    cache_key: str = Field(description="缓存唯一键 = hash(resume_id + 语义向量)")
-    resume_id: str = Field(description="关联的简历 ID")
-    question: str = Field(description="原始问题文本")
-    answer: str = Field(description="缓存的回答")
-    confidence: float = Field(ge=0.0, le=1.0, description="匹配置信度分数")
-    created_at: float = Field(default_factory=time.time, description="创建时间戳")
-    ttl: int = Field(default=3600, description="TTL（秒）")
-    hit_count: int = Field(default=0, description="命中次数")
-
-    @property
-    def is_expired(self) -> bool:
-        return time.time() - self.created_at > self.ttl
-
-
-class CacheHitResult(BaseModel):
-    """缓存命中结果"""
-    hit: bool
-    answer: str = ""
-    confidence: float = 0.0
-    cache_key: str = ""
-
-
-class CacheStats(BaseModel):
-    """缓存命中率统计"""
-    total_queries: int = 0
-    cache_hits: int = 0
-    cache_misses: int = 0
-    evictions: int = 0
-
-    @property
-    def hit_rate(self) -> float:
-        if self.total_queries == 0:
-            return 0.0
-        return self.cache_hits / self.total_queries
-
-
-class WarmupRequest(BaseModel):
-    """缓存预热请求"""
-    resume_id: str
-    qa_pairs: list[dict[str, str]] = Field(description="预热的问答对列表，每项包含 question 和 answer")
-
-
-class WarmupResponse(BaseModel):
-    """缓存预热响应"""
-    loaded_count: int
-    resume_id: str
-
-
-# ═══════════════════════════════════════════
 #  API 管理相关模型
 # ═══════════════════════════════════════════
 

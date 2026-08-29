@@ -1,0 +1,27 @@
+{
+  "skill_importance": {
+    "RAG系统搭建": "required",
+    "Agent原理与架构": "required",
+    "AI编程工具": "required",
+    "大模型基本原理与推理部署方式": "required",
+    "系统设计能力": "required",
+    "分布式系统": "required",
+    "微服务架构": "required",
+    "消息队列": "required",
+    "缓存": "required",
+    "全栈项目经验": "preferred",
+    "模型算法调优经验": "preferred",
+    "复杂Agent构建经验": "preferred",
+    "开源项目参与": "bonus",
+    "技术博客": "bonus",
+    "技术作品": "bonus",
+    "技术竞赛": "bonus",
+    "开源社区": "bonus"
+  },
+  "suggested_max_questions": 18,
+  "topics_per_skill": {
+    "required": 4,
+    "preferred": 3,
+    "bonus": 2
+  }
+}

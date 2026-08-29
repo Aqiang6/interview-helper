@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 先把 .env 里的 HF_ENDPOINT / 代理类变量显式写入 os.environ，避免 pydantic_settings 的
+# env_file 只喂给 BaseSettings fields，第三方库（huggingface_hub、sentence_transformers）
+# 又直接读 os.environ 拿不到的问题。
+try:
+    from dotenv import dotenv_values  # type: ignore
+except Exception:  # pragma: no cover
+    dotenv_values = None
+
+if dotenv_values is not None:
+    _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+    if _ENV_PATH.is_file():
+        for _k, _v in dotenv_values(_ENV_PATH, encoding="utf-8").items():
+            if _v is None:
+                continue
+            # 仅覆盖当前进程未显式传入的值：这样命令行 export 仍可覆盖 .env。
+            os.environ.setdefault(_k, _v)
 
 
 class AppSettings(BaseSettings):
@@ -30,20 +48,6 @@ class AppSettings(BaseSettings):
     # ── 加密密钥 ──
     encryption_key: str = Field(default="", description="Fernet 对称加密密钥，为空时自动生成")
 
-    # ── 语义缓存 ──
-    embedding_model: str = Field(
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        description="Embedding 模型名称",
-    )
-    cache_similarity_threshold: float = Field(default=0.92, ge=0.0, le=1.0, description="语义缓存命中阈值")
-    cache_ttl_seconds: int = Field(default=3600, ge=60, description="缓存 TTL（秒）")
-    cache_max_size: int = Field(default=10000, ge=100, description="缓存最大条目数")
-
-    # ── RAG 知识库 ──
-    rag_enabled: bool = Field(default=True, description="是否启用 RAG 知识库检索")
-    rag_top_k: int = Field(default=3, ge=1, le=10, description="RAG 检索返回的条目数")
-    rag_min_score: float = Field(default=0.3, ge=0.0, le=1.0, description="RAG 检索最低相似度阈值")
-
     # ── LangGraph Agent ──
     agent_max_questions: int = Field(default=15, ge=3, le=50, description="单次面试最大问题数")
     agent_recursion_limit: int = Field(default=10, ge=3, le=25, description="LangGraph 递归限制")
@@ -56,6 +60,34 @@ class AppSettings(BaseSettings):
     # ── 服务配置 ──
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8000, ge=1024, le=65535)
+
+    # ── 刷题助手：PostgreSQL + pgvector 知识库 ──
+    postgres_dsn: str = Field(
+        default="postgresql+psycopg://postgres:postgres@localhost:5432/interview_helper",
+        description="PostgreSQL 连接串（SQLAlchemy 风格），用户需先 CREATE EXTENSION vector",
+    )
+    quiz_embedding_backend: str = Field(
+        default="sentence_transformers",
+        description="刷题助手向量后端：sentence_transformers（本地模型，免 Key）或 openai（走 OPENAI_API_KEY）",
+    )
+    quiz_sentence_transformer_model: str = Field(
+        default="all-MiniLM-L6-v2",
+        description="sentence_transformers 本地模型名；默认 all-MiniLM-L6-v2 输出 384 维，中文题可用 sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    )
+    quiz_embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="仅 quiz_embedding_backend=openai 时使用：刷题助手向量检索 embedding 模型（走 openai_base_url / openai_api_key）",
+    )
+    quiz_embedding_dimensions: int = Field(
+        default=384,
+        description="向量维度：all-MiniLM-L6-v2=384 / paraphrase-multilingual-MiniLM-L12-v2=384 / text-embedding-3-small 默认 1536；schema 首次初始化时生效",
+    )
+    quiz_top_k: int = Field(default=10, ge=1, le=200, description="自定义主题向量检索返回题数")
+    quiz_min_similarity: float = Field(
+        default=0.3, ge=0.0, le=1.0, description="自定义主题向量检索最低相似度（余弦），低于阈值的题会被过滤"
+    )
+    quiz_crawler_timeout: float = Field(default=30.0, ge=5.0, description="爬取单页超时秒数")
+    quiz_crawler_concurrency: int = Field(default=5, ge=1, le=32, description="爬取并发数")
 
 
 @lru_cache(maxsize=1)

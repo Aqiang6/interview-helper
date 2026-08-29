@@ -207,6 +207,60 @@ def get_position(position_id_or_name: str) -> JobPosition | None:
     return None
 
 
+def create_custom_position(name: str, jd_text: str) -> JobPosition:
+    """根据用户自定义输入创建临时岗位（不入库，仅用于当前面试）
+
+    Args:
+        name: 岗位名称（如"资深 Java 后端工程师"）
+        jd_text: JD 原文（岗位描述 + 要求 + 加分项，纯文本即可）
+
+    Returns:
+        JobPosition 对象，position_id 以 custom_ 前缀标识
+    """
+    position_id = "custom_" + _slug_to_id(name)
+    # 尝试简单分段：按常见标题词切分，不强制结构化
+    lines = [ln.strip() for ln in jd_text.splitlines() if ln.strip()]
+    description: list[str] = []
+    requirements: list[str] = []
+    bonuses: list[str] = []
+    section = None
+    for line in lines:
+        if any(kw in line for kw in ["岗位描述", "工作内容", "职责描述", "Job Description"]):
+            section = "description"
+            continue
+        if any(kw in line for kw in ["岗位要求", "任职要求", "任职资格", "Requirements", "任职条件"]):
+            section = "requirements"
+            continue
+        if any(kw in line for kw in ["加分项", "优先条件", "Bonus", "Preferred"]):
+            section = "bonuses"
+            continue
+        if section == "description":
+            description.append(line)
+        elif section == "requirements":
+            requirements.append(line)
+        elif section == "bonuses":
+            bonuses.append(line)
+        else:
+            # 没有明确段落标记 → 全归到 requirements
+            requirements.append(line)
+
+    # 如果没有任何分段命中，把整段 jd_text 作为 requirements
+    if not description and not requirements and not bonuses:
+        requirements = [jd_text.strip()]
+
+    return JobPosition(
+        position_id=position_id,
+        name=name.strip() or "自定义岗位",
+        level="自定义",
+        group="自定义岗位",
+        location="不限",
+        description=description,
+        requirements=requirements,
+        bonuses=bonuses,
+        raw_text=jd_text.strip(),
+    )
+
+
 # ═══════════════════════════════════════════
 #  LLM 驱动优先级排序 Prompt（JD-aware）
 # ═══════════════════════════════════════════
@@ -215,28 +269,23 @@ PRIORITY_SYSTEM_PROMPT = """你是面试话题规划专家。根据目标岗位�
 
 生成【按面试优先级从高到低排序的话题列表】，并标注每个话题在当前 JD 中的要求强度。
 
-输出必须是严格的 JSON，格式：
+## 话题来源（最重要的规则）
+ordered_topics 里的每个话题名**必须直接摘自 JD 原文中明确提到的技术名词**：
+- JD 写了"熟悉RAG技术"才能有"RAG"话题；JD 通篇没提的语言/框架/中间件**一律禁止出现**
+- 话题名优先直接摘取 JD 原词（如 JD 写"Agent原理与架构"就摘"Agent原理与架构"），不要自己概括编造新词
+- 下面的 JSON 示例里所有话题名只是占位符，与你的输出内容无关，严禁照抄
+- 候选人技能列表只是参考（用于判断候选人会什么），**不是话题来源**——候选人会但 JD 没提的技能不列
+
+输出必须是严格的 JSON，格式（注意：`<话题N>` 只是占位符，必须用「JD 原文里真实出现的技术名词」替换，严禁原样输出占位符）：
 ```json
 {
-  "ordered_topics": [
-    "RAG系统",
-    "Agent架构设计",
-    "LangGraph框架实践",
-    "Python工程能力",
-    "分布式系统基础",
-    "Prompt Engineering",
-    "向量数据库与检索",
-    "全栈开发基础"
-  ],
+  "ordered_topics": ["<话题1>", "<话题2>", "<话题3>", "<话题4>", "<话题5>"],
   "skill_importance": {
-    "RAG系统": "required",
-    "Agent架构设计": "required",
-    "LangGraph框架实践": "preferred",
-    "Python工程能力": "required",
-    "分布式系统基础": "preferred",
-    "Prompt Engineering": "preferred",
-    "向量数据库与检索": "preferred",
-    "全栈开发基础": "preferred"
+    "<话题1>": "required",
+    "<话题2>": "required",
+    "<话题3>": "preferred",
+    "<话题4>": "preferred",
+    "<话题5>": "bonus"
   },
   "suggested_max_questions": 18,
   "topics_per_skill": {
@@ -248,18 +297,20 @@ PRIORITY_SYSTEM_PROMPT = """你是面试话题规划专家。根据目标岗位�
 ```
 
 ### 规则（必须严格遵守）
-1. **ordered_topics 只从候选人技能里挑**，不能凭空生成候选人根本没提到过的技能（但允许用 JD 里的对应标准名替代 resume 里的别名，比如简历里写"检索增强"→ 标准名 "RAG系统"）
-2. **面试优先级排序依据：**
-   - 第1层：JD 岗位要求里明确写的 required 技能 → 最优先问；JD 加分项里的 bonus 技能 → 最末
+1. **ordered_topics 只从 JD 原文提到的技术中摘取**，宁缺毋滥，JD 没提就不列；每个话题必须能在 JD 原文中找到出处
+2. **skill_importance 的判定必须能对应到 JD 原文**：
+   - required：JD 岗位要求里明确写"必须/熟练掌握/精通"等强要求的核心技能
+   - preferred：JD 里写"了解/熟悉"或偏工程实践的能力
+   - bonus：只出现在 JD 加分项里的技能
+   - 判不准时倾向 preferred 而不是 required，不要虚报 required
+   - **required 话题最多 8 个**：只挑 JD 核心能力，超过 8 个时把最弱的挪到 preferred
+3. **面试优先级排序依据：**
+   - 第1层：required 技能 → 最优先问；bonus 技能 → 最末
    - 第2层：同一强度档里，简历有项目经验/线上经验的先问（简历摘要里高频出现的先）
-   - 第3层：同大类话题聚类在一起（比如"Agent框架"相关的都排一段，别东一个西一个）
-3. **skill_importance 取值只能是 "required" / "preferred" / "bonus"** 三选一：
-   - required：岗位要求里明确列的核心技能（不会就不适合这个岗位）
-   - preferred：JD 里提到的"了解/熟悉"或偏工程实践的能力（加分但不致命）
-   - bonus：只在加分项里出现的、锦上添花的点
-4. **suggested_max_questions** 根据 JD 强度决定：
-   - Agent工程师 / AI全栈 这种要求技术密度高的岗位：17-20 题
-   - AI应用工程师 / 后台开发：13-16 题
+   - 第3层：同大类话题聚类在一起（相关的都排一段，别东一个西一个）
+4. **suggested_max_questions** 根据 JD 技术密度决定：
+   - JD 要求又多又深（核心技能≥5 项）：17-20 题
+   - JD 要求适中：13-16 题
 5. **topics_per_skill**：同一强度档每题建议问几轮深度追问
    - required：4 轮（追问深一点，这是核心指标）
    - preferred：3 轮

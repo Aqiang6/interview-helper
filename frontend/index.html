@@ -1,1387 +1,1748 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 模拟面试</title>
-    <!-- Vue3 -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <!-- ElementPlus -->
-    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="only light" />
+    <title>Interview Helper · 面试助手 &amp; 刷题助手</title>
+    <meta name="description" content="中文面试双引擎：面试助手（简历+JD 驱动的模拟对话）+ 1167 题中文知识库（pgvector 语义检索，结构化出题）。" />
+    <meta name="theme-color" content="#f5f5f7" />
+    <meta property="og:title" content="Interview Helper · 面试助手 / 刷题助手" />
+    <meta property="og:description" content="模拟面试 + 中文刷题助手" />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%230071e3'/><text x='16' y='22' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,&quot;SF Pro Display&quot;,sans-serif' font-size='19' font-weight='700' fill='white'>I</text></svg>" />
+
+    <!-- Apple-flavored design tokens -->
+    <link rel="stylesheet" href="/static/styles.apple.css" />
+    <!-- Vue 3 + Element Plus (legacy interview flow still depends on them)
+         NOTE: intentionally NOT `defer` because the inline <script> at the end of
+         <body> references `Vue` / `ElementPlus` synchronously. Deferring these
+         would race the inline script and throw "Vue is not defined". -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://unpkg.com/element-plus"></script>
-    <!-- ElementPlus Icons -->
     <script src="https://unpkg.com/@element-plus/icons-vue"></script>
+    <!-- Minimal Markdown renderer (no external dep) -->
+    <script src="/static/md.js"></script>
+
     <style>
+        /* ---------- Element Plus alignment to tokens (light-only, flat) ---------- */
         :root {
-            --color-primary: #4F46E5;
-            --color-primary-light: #EEF2FF;
-            --color-primary-dark: #3730A3;
-            --color-secondary: #06B6D4;
-            --color-success: #10B981;
-            --color-warning: #F59E0B;
-            --color-danger: #EF4444;
-            --color-bg: #F8FAFC;
-            --color-bg-gradient-start: #EEF2FF;
-            --color-bg-gradient-end: #F0FDFA;
-            --color-surface: rgba(255, 255, 255, 0.85);
-            --color-surface-hover: rgba(255, 255, 255, 0.95);
-            --color-text-primary: #1E293B;
-            --color-text-secondary: #64748B;
-            --color-text-muted: #94A3B8;
-            --color-border: rgba(226, 232, 240, 0.6);
-            --color-border-light: rgba(241, 245, 249, 0.8);
-            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.06), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
-            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.06), 0 10px 10px -5px rgba(0, 0, 0, 0.02);
-            --shadow-glass: 0 8px 32px rgba(79, 70, 229, 0.08);
-            --space-xs: 4px;
-            --space-sm: 8px;
-            --space-md: 12px;
-            --space-lg: 16px;
-            --space-xl: 20px;
-            --space-2xl: 28px;
-            --space-3xl: 36px;
-            --radius-sm: 8px;
-            --radius-md: 12px;
-            --radius-lg: 16px;
-            --radius-xl: 20px;
-            --radius-full: 9999px;
-            --font-size-xs: 12px;
-            --font-size-sm: 14px;
-            --font-size-base: 15px;
-            --font-size-lg: 16px;
-            --font-size-xl: 20px;
-            --font-size-2xl: 24px;
-            --font-size-3xl: 28px;
-            --font-weight-normal: 400;
-            --font-weight-medium: 500;
-            --font-weight-semibold: 600;
-            --font-weight-bold: 700;
+            --el-color-primary: var(--accent);
+            --el-color-primary-light-3: #3b8ff0;
+            --el-color-primary-light-5: #6aaef5;
+            --el-color-primary-light-7: #a3cffa;
+            --el-color-primary-light-8: #c4dffd;
+            --el-color-primary-light-9: #eef4ff;
+            --el-color-primary-dark-2: #0061c4;
+            --el-border-radius-base: 12px;
+            --el-border-radius-small: 10px;
+            --el-font-family: var(--font-sans);
+            --el-text-color-primary: var(--text);
+            --el-text-color-regular: var(--text-2);
+            --el-text-color-secondary: var(--text-3);
+            --el-fill-color-blank: var(--bg-elev);
+            --el-border-color: var(--border-strong);
+            --el-border-color-light: var(--border);
+            --el-bg-color: var(--bg-elev);
+            --el-bg-color-page: transparent;
+            color-scheme: light;
         }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        html { scroll-behavior: smooth; }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, var(--color-bg-gradient-start) 0%, var(--color-bg-gradient-end) 50%, var(--color-bg) 100%);
-            height: 100vh;
-            overflow: hidden;
-            color: var(--color-text-primary);
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-        }
-
-        #app { height: 100%; }
-
-        .main-container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: var(--space-lg) var(--space-xl);
-            height: 100%;
+        /* EP cards / tabs use flat surfaces — we give them elevation only inside the legacy container */
+        .interview-shell {
             display: flex;
             flex-direction: column;
+            gap: var(--sp-6);
         }
-
-        @media (max-width: 1200px) {
-            .main-container { max-width: 1000px; padding: var(--space-xl) var(--space-lg); }
+        .interview-shell .el-form-item { margin-bottom: var(--sp-4); }
+        .interview-shell .el-tabs--top { padding: var(--sp-3) var(--sp-4); background: var(--bg-elev); border-radius: var(--r-xl); border: 0.5px solid var(--border); }
+        .interview-shell .header h1 { background: none; -webkit-text-fill-color: currentColor; background-clip: unset; color: var(--text); letter-spacing: -0.02em; }
+        .interview-shell .card { padding: var(--sp-6); background: #fff; border: 0.5px solid var(--border); border-radius: var(--r-2xl); box-shadow: var(--shadow-sm); }
+        .interview-shell .report-card { background: #fff; border: 0.5px solid var(--border); border-radius: var(--r-xl); padding: var(--sp-5); box-shadow: var(--shadow-xs); margin: 0 0 var(--sp-5); }
+        .interview-shell .el-input__wrapper { padding: 10px 14px; border-radius: var(--r-md); background: #fff; border: 0.5px solid var(--border-strong); box-shadow: none; transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out); }
+        .interview-shell .el-input__wrapper:hover { border-color: var(--ink-400); }
+        .interview-shell .el-input__wrapper.is-focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .interview-shell .el-button { border-radius: var(--r-pill); font-weight: var(--fw-medium); }
+        .interview-shell .el-button--primary { background: var(--accent); box-shadow: none; border-color: transparent; color: #fff; }
+        .interview-shell .el-button--primary:hover { background: var(--accent-hover); }
+        .interview-shell .el-button--success { background: var(--success); border-color: transparent; color: #fff; box-shadow: none; }
+        .interview-shell .el-tag { border-radius: var(--r-pill); }
+        .interview-shell .header-icon { filter: none; opacity: 0.9; }
+        .interview-shell .score-number { color: var(--accent); font-weight: 800; background: none; -webkit-text-fill-color: currentColor; }
+        .interview-shell .step-title {
+            font-size: var(--fs-xl); font-weight: var(--fw-semibold); letter-spacing: -0.01em;
+            color: var(--text); margin: 0 0 var(--sp-5); display: flex; align-items: baseline; justify-content: space-between;
         }
-
-        @media (max-width: 768px) {
-            .main-container { padding: var(--space-lg) var(--space-md); }
+        .interview-shell .report-card-title {
+            font-size: var(--fs-lg); font-weight: var(--fw-semibold); letter-spacing: -0.005em;
+            color: var(--text); margin: 0 0 var(--sp-4);
         }
-
-        .header {
-            text-align: center;
-            margin-bottom: var(--space-xl);
-            flex-shrink: 0;
+        .interview-shell .step-actions,
+        .interview-shell .action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-5); }
+        .interview-shell .info-label {
+            font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--text-3); font-weight: var(--fw-semibold);
         }
-
-        .header-icon {
-            font-size: 36px;
-            margin-bottom: var(--space-sm);
-            filter: drop-shadow(0 4px 12px rgba(79, 70, 229, 0.15));
+        .interview-shell .info-grid {
+            display: grid; gap: var(--sp-4); grid-template-columns: repeat(2, minmax(0,1fr));
         }
-
-        .header h1 {
-            font-size: var(--font-size-2xl);
-            font-weight: var(--font-weight-bold);
-            color: var(--color-text-primary);
-            margin-bottom: var(--space-xs);
-            background: linear-gradient(135deg, var(--color-text-primary) 0%, var(--color-primary) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+        @media (max-width: 760px) { .interview-shell .info-grid { grid-template-columns: 1fr; } }
+        .interview-shell .info-item { background: var(--bg-soft); border: 0.5px solid var(--border); border-radius: var(--r-lg); padding: var(--sp-4); }
+        .interview-shell .info-value { color: var(--text-2); font-size: var(--fs-sm); line-height: 1.7; }
+        .interview-shell .evaluation-grid {
+            display: grid; gap: var(--sp-4); grid-template-columns: repeat(2, minmax(0,1fr));
         }
-
-        .header p {
-            font-size: var(--font-size-sm);
-            color: var(--color-text-secondary);
-            max-width: 400px;
-            margin: 0 auto;
-            line-height: 1.5;
+        @media (max-width: 760px) { .interview-shell .evaluation-grid { grid-template-columns: 1fr; } }
+        .interview-shell .dimension-bar {
+            background: var(--bg-soft); border: 0.5px solid var(--border); border-radius: var(--r-lg); padding: var(--sp-4);
         }
-
-        .step-nav-compact {
-            display: flex;
-            align-items: center;
+        .interview-shell .score-circle {
+            display: inline-flex; flex-direction: column; align-items: center; gap: 4px;
+            width: 120px; height: 120px; border-radius: 999px;
+            background: #fff; border: 0.5px solid var(--border); box-shadow: var(--shadow-sm);
             justify-content: center;
-            gap: 8px;
-            margin-bottom: var(--space-lg);
-            flex-shrink: 0;
         }
-
-        .step-dot {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            background: var(--color-border);
-            color: var(--color-text-muted);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
+        .interview-shell .score-circle .score-number {
+            font-size: 44px; line-height: 1; letter-spacing: -0.03em;
         }
-
-        .step-dot.active {
-            background: var(--color-primary);
-            color: white;
-            cursor: default;
+        .interview-shell .score-circle .score-label {
+            font-size: var(--fs-xs); color: var(--text-3); letter-spacing: 0.04em; text-transform: uppercase;
         }
-
-        .step-line {
-            width: 24px;
-            height: 2px;
-            background: var(--color-border);
+        .interview-shell .recommendation-tag {
+            display: inline-flex; align-items: center; padding: 6px 14px; border-radius: var(--r-pill);
+            font-size: var(--fs-sm); font-weight: var(--fw-semibold);
+            background: var(--bg-soft); color: var(--text-2); border: 0.5px solid var(--border);
         }
+        .interview-shell .recommendation-pass  { color: var(--success); background: var(--success-soft); border-color: transparent; }
+        .interview-shell .recommendation-fail  { color: var(--danger);  background: var(--danger-soft);  border-color: transparent; }
+        .interview-shell .recommendation-pending { color: var(--warning); background: var(--warning-soft); border-color: transparent; }
 
-        .card {
-            background: var(--color-surface);
-            backdrop-filter: blur(20px);
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-xl);
-            box-shadow: var(--shadow-glass);
-            padding: var(--space-lg);
-            flex: 1;
-            min-height: 0;
-            overflow-y: auto;
-            scrollbar-width: none;
-            -ms-overflow-style: none;
-            display: flex;
-            flex-direction: column;
+        /* ---------- Horizontal StepBar (replace left sidebar step nav) ---------- */
+        .stepbar {
+            display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: var(--sp-3);
+            padding: var(--sp-3);
+            background: #fff; border: 0.5px solid var(--border); border-radius: var(--r-xl);
+            box-shadow: var(--shadow-xs);
+            margin: 0 0 var(--sp-3);
         }
-
-        /* 步骤3的card特殊处理 */
-        .card.interview-step {
-            overflow: visible;
+        @media (max-width: 760px) { .stepbar { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+        .stepbar .step {
+            appearance: none; background: transparent; border: 0;
+            display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+            border-radius: var(--r-lg); cursor: pointer; text-align: left;
+            color: var(--text-2); transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
         }
-
-        .card.interview-step .step-title {
-            flex-shrink: 0;
+        .stepbar .step:hover { background: var(--bg-soft); color: var(--text); }
+        .stepbar .step__dot {
+            width: 22px; height: 22px; border-radius: 999px; flex-shrink: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 11px; font-weight: 700; color: var(--text-3);
+            background: var(--bg-soft); border: 0.5px solid var(--border);
         }
+        .stepbar .step__main { display: flex; flex-direction: column; min-width: 0; }
+        .stepbar .step__label { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: inherit; line-height: 1.35; }
+        .stepbar .step__hint { font-size: var(--fs-xs); color: var(--text-3); line-height: 1.4; margin-top: 2px; }
+        .stepbar .step[aria-current="step"] { background: var(--accent-soft); color: var(--text); }
+        .stepbar .step[aria-current="step"] .step__dot { background: var(--accent); color: #fff; border-color: transparent; }
+        .stepbar .step[data-done="true"] .step__dot { background: var(--success); color: #fff; border-color: transparent; }
+        .stepbar .step[data-done="true"] .step__hint::after { content: " · 已完成"; }
 
-        .card.interview-step .chat-container {
-            flex: 1;
-            min-height: 200px;
-            max-height: none;
-        }
+        /* （聊天/气泡样式统一由 styles.apple.css 提供，避免 inline 与全局类名冲突导致界面错乱） */
 
-        .card.interview-step .chat-input,
-        .card.interview-step .action-bar {
-            flex-shrink: 0;
-        }
-
-        .card::-webkit-scrollbar {
-            display: none;
-        }
-
-        .card:hover {
-            background: var(--color-surface-hover);
-            box-shadow: var(--shadow-xl);
-        }
-
-        .step-title {
-            font-size: var(--font-size-xl);
-            font-weight: var(--font-weight-semibold);
-            margin-bottom: var(--space-md);
-            color: var(--color-text-primary);
-            display: flex;
-            align-items: center;
-            gap: var(--space-md);
-        }
-
-        .step-title::before {
-            content: '';
-            width: 4px;
-            height: 28px;
-            background: linear-gradient(180deg, var(--color-primary) 0%, var(--color-secondary) 100%);
-            border-radius: var(--radius-full);
-        }
-
-        .skill-tag {
-            margin: var(--space-xs) var(--space-sm) var(--space-xs) 0;
-        }
-
-        .chat-container {
-            background: rgba(248, 250, 252, 0.6);
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--color-border-light);
-            border-radius: var(--radius-lg);
-            padding: var(--space-lg);
-            min-height: 300px;
-            max-height: calc(100vh - 280px);
-            overflow-y: auto;
-            margin-bottom: var(--space-lg);
-            scrollbar-width: thin;
-            scrollbar-color: var(--color-primary-light) transparent;
-        }
-
-        .chat-container::-webkit-scrollbar {
-            width: 4px;
-        }
-
-        .chat-container::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        .chat-container::-webkit-scrollbar-thumb {
-            background: var(--color-primary-light);
-            border-radius: var(--radius-full);
-        }
-
-        .message {
-            display: flex;
-            margin-bottom: var(--space-lg);
-            animation: fadeIn 0.3s ease;
-        }
-
-        .message-avatar {
-            width: 36px;
-            height: 36px;
-            border-radius: var(--radius-full);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            flex-shrink: 0;
+        /* ---------- Mode launcher card (top of Quiz page, replaces empty state + segments) ---------- */
+        .mode-card {
+            background: linear-gradient(180deg, #eef4ff 0%, #ffffff 48%);
+            border: 0.5px solid rgba(0,113,227,0.16);
+            border-radius: var(--r-2xl);
+            padding: var(--sp-8) var(--sp-8) var(--sp-6);
             box-shadow: var(--shadow-sm);
         }
-
-        .message-avatar.interviewer {
-            background: linear-gradient(135deg, var(--color-primary-light) 0%, #E0E7FF 100%);
-            color: var(--color-primary);
-            border: 2px solid rgba(79, 70, 229, 0.1);
-        }
-
-        .message-avatar.candidate {
-            background: linear-gradient(135deg, #D1FAE5 0%, #A7F3D0 100%);
-            color: var(--color-success);
-            border: 2px solid rgba(16, 185, 129, 0.1);
-            order: 2;
-        }
-
-        .message-body {
-            max-width: 75%;
-            padding: var(--space-sm) var(--space-lg);
-            border-radius: var(--radius-lg);
-            margin: 0 var(--space-sm);
-            line-height: 1.6;
-            font-size: var(--font-size-sm);
-            white-space: pre-wrap;
-        }
-
-        .message-body.interviewer {
-            background: var(--color-surface);
-            border: 1px solid var(--color-border);
-            box-shadow: var(--shadow-md);
-            color: var(--color-text-primary);
-        }
-
-        .message-body.candidate {
-            background: linear-gradient(135deg, var(--color-primary-light) 0%, rgba(79, 70, 229, 0.1) 100%);
-            color: var(--color-primary-dark);
-            margin-left: auto;
-            order: 1;
-            border: 1px solid rgba(79, 70, 229, 0.15);
-        }
-
-        .chat-input {
-            display: flex;
-            gap: var(--space-md);
-        }
-
-        .chat-input .el-input {
-            flex: 1;
-        }
-
-        .chat-input .el-input__wrapper {
-            border-radius: var(--radius-lg);
-            box-shadow: var(--shadow-sm);
-            border-color: var(--color-border);
-        }
-
-        .chat-input .el-button {
-            padding: 0 var(--space-2xl);
-            border-radius: var(--radius-lg);
-            font-weight: var(--font-weight-semibold);
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
-        .footer {
-            text-align: center;
-            color: var(--color-text-muted);
-            padding: var(--space-lg) 0;
-            font-size: var(--font-size-xs);
-            flex-shrink: 0;
-        }
-
-        .report-card {
-            background: var(--color-surface);
-            backdrop-filter: blur(16px);
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-lg);
-            padding: var(--space-lg);
-            margin-bottom: var(--space-lg);
-            box-shadow: var(--shadow-md);
-        }
-
-        .report-card-title {
-            font-size: var(--font-size-base);
-            font-weight: var(--font-weight-semibold);
-            color: var(--color-text-primary);
-            margin-bottom: var(--space-lg);
-            padding-bottom: var(--space-md);
-            border-bottom: 1px solid var(--color-border-light);
-            display: flex;
-            align-items: center;
-            gap: var(--space-sm);
-        }
-
-        .score-circle {
-            text-align: center;
-            padding: var(--space-lg) 0;
-            position: relative;
-        }
-
-        .score-circle::before {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 100px;
-            height: 100px;
-            background: radial-gradient(circle, rgba(79, 70, 229, 0.1) 0%, transparent 70%);
-            border-radius: 50%;
-        }
-
-        .score-number {
-            font-size: 56px;
-            font-weight: var(--font-weight-bold);
-            background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            position: relative;
-            z-index: 1;
-            line-height: 1;
-        }
-
-        .score-label {
-            color: var(--color-text-secondary);
-            font-size: var(--font-size-sm);
-            margin-top: var(--space-xs);
-            display: block;
-        }
-
-        .dimension-bar {
-            margin: var(--space-lg) 0;
-        }
-
-        .dimension-bar .el-progress {
-            margin: 0 var(--space-lg);
-        }
-
-        .dimension-bar .el-progress-bar__outer {
-            border-radius: var(--radius-full);
-            background: rgba(79, 70, 229, 0.08);
-        }
-
-        .dimension-bar .el-progress-bar__inner {
-            border-radius: var(--radius-full);
-        }
-
-        .recommendation-tag {
-            display: inline-block;
-            padding: var(--space-sm) var(--space-2xl);
-            border-radius: var(--radius-full);
-            color: #fff;
-            font-weight: var(--font-weight-semibold);
-            font-size: var(--font-size-base);
-            box-shadow: var(--shadow-md);
-            transition: transform 0.2s ease;
-        }
-
-        .recommendation-tag:hover {
-            transform: scale(1.05);
-        }
-
-        .recommendation-pass {
-            background: linear-gradient(135deg, var(--color-success) 0%, #059669 100%);
-        }
-
-        .recommendation-fail {
-            background: linear-gradient(135deg, var(--color-danger) 0%, #DC2626 100%);
-        }
-
-        .recommendation-pending {
-            background: linear-gradient(135deg, var(--color-warning) 0%, #D97706 100%);
-        }
-
-        .info-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: var(--space-lg);
-            margin: var(--space-xl) 0;
-        }
-
-        .info-item {
-            background: rgba(248, 250, 252, 0.8);
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--color-border-light);
-            border-radius: var(--radius-md);
-            padding: var(--space-lg);
-        }
-
-        .info-label {
-            font-size: var(--font-size-xs);
-            color: var(--color-text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: var(--space-xs);
-            font-weight: var(--font-weight-medium);
-        }
-
-        .info-value {
-            font-size: var(--font-size-base);
-            color: var(--color-text-primary);
-            font-weight: var(--font-weight-semibold);
-        }
-
-        .list-card {
-            background: rgba(248, 250, 252, 0.8);
-            border: 1px solid var(--color-border-light);
-            border-radius: var(--radius-md);
-            padding: var(--space-lg);
-            margin: var(--space-sm) 0;
-        }
-
-        .list-card ul {
-            margin: 0;
-            padding-left: var(--space-lg);
-        }
-
-        .list-card li {
-            margin: var(--space-sm) 0;
-            color: var(--color-text-primary);
-            line-height: 1.5;
-            font-size: var(--font-size-sm);
-        }
-
-        .list-card li::marker {
-            color: var(--color-primary);
-            font-weight: bold;
-        }
-
-        .step-nav {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            margin-bottom: var(--space-lg);
-            padding: var(--space-sm) var(--space-lg);
-            background: var(--color-surface);
-            backdrop-filter: blur(20px);
-            border: 1px solid var(--color-border);
-            border-radius: var(--radius-lg);
-            box-shadow: var(--shadow-glass);
-            position: relative;
-            flex-shrink: 0;
-        }
-
-        .step-nav::before {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 8%;
-            right: 8%;
-            height: 2px;
-            background: var(--color-border-light);
-            transform: translateY(-50%);
-            z-index: 0;
-        }
-
-        .step-nav::after {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 8%;
-            right: calc(100% - 8% - (84% * var(--progress, 0)));
-            height: 2px;
-            background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-secondary) 100%);
-            transform: translateY(-50%);
-            z-index: 1;
-            border-radius: var(--radius-full);
-            transition: right 0.5s ease;
-        }
-
-        .step-nav-item {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            position: relative;
-            z-index: 2;
-            flex: 1;
-            max-width: 120px;
-        }
-
-        .step-nav-item .dot {
-            width: 32px;
-            height: 32px;
-            border-radius: var(--radius-full);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: var(--font-size-sm);
-            font-weight: var(--font-weight-semibold);
-            transition: all 0.3s ease;
-            border: 2px solid transparent;
-            margin-bottom: var(--space-xs);
-        }
-
-        .step-nav-item .dot.active {
-            background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
-            color: #fff;
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15), var(--shadow-sm);
-            transform: scale(1.1);
-        }
-
-        .step-nav-item .dot.inactive {
-            background: var(--color-bg);
-            color: var(--color-text-muted);
-            border-color: var(--color-border);
-        }
-
-        .step-nav-item .label {
-            font-size: var(--font-size-xs);
-            color: var(--color-text-muted);
-            font-weight: var(--font-weight-medium);
-            text-align: center;
-            transition: all 0.3s ease;
-            max-width: 100px;
-        }
-
-        .step-nav-item .label.active {
-            color: var(--color-primary);
-            font-weight: var(--font-weight-semibold);
-        }
-
-        .el-form-item {
-            margin-bottom: var(--space-lg);
-        }
-
-        .el-form-item__label {
-            font-weight: var(--font-weight-semibold);
-            color: var(--color-text-primary);
-            font-size: var(--font-size-base);
-            margin-bottom: var(--space-sm);
-        }
-
-        .el-input__wrapper {
-            border-radius: var(--radius-lg);
-            box-shadow: var(--shadow-sm);
-            border-color: var(--color-border);
-            padding: 10px 16px;
-        }
-
-        .el-input__wrapper:hover {
-            border-color: var(--color-primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.08);
-        }
-
-        .el-input__wrapper.is-focus {
-            border-color: var(--color-primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
-        }
-
-        .el-textarea__inner {
-            border-radius: var(--radius-lg);
-            border-color: var(--color-border);
-            box-shadow: var(--shadow-sm);
-            font-size: var(--font-size-base);
-            line-height: 1.6;
-        }
-
-        .el-textarea__inner:hover {
-            border-color: var(--color-primary);
-        }
-
-        .el-textarea__inner:focus {
-            border-color: var(--color-primary);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
-        }
-
-        .el-button {
-            border-radius: var(--radius-lg);
-            font-weight: var(--font-weight-medium);
-            transition: all 0.2s ease;
-        }
-
-        .el-button--primary {
-            background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
-            border: none;
-            box-shadow: var(--shadow-md);
-        }
-
-        .el-button--primary:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-lg);
-            background: linear-gradient(135deg, var(--color-primary-dark) 0%, var(--color-primary) 100%);
-        }
-
-        .el-button--success {
-            background: linear-gradient(135deg, var(--color-success) 0%, #059669 100%);
-            border: none;
-            box-shadow: var(--shadow-md);
-        }
-
-        .el-button--success:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-lg);
-        }
-
-        .el-button--primary.is-plain {
-            background: transparent;
-            border-color: var(--color-primary);
-            color: var(--color-primary);
-        }
-
-        .el-button--primary.is-plain:hover {
-            background: var(--color-primary-light);
-            border-color: var(--color-primary);
-        }
-
-        .el-tabs__header {
-            margin-bottom: var(--space-xl);
-        }
-
-        .el-tabs__item {
-            font-weight: var(--font-weight-medium);
-            font-size: var(--font-size-base);
-            color: var(--color-text-secondary);
-            padding: var(--space-md) var(--space-xl);
-        }
-
-        .el-tabs__item.is-active {
-            color: var(--color-primary);
-            font-weight: var(--font-weight-semibold);
-        }
-
-        .el-tabs__active-bar {
-            background: var(--color-primary);
-            height: 3px;
-            border-radius: var(--radius-full);
-        }
-
-        .el-upload-dragger {
-            border-radius: var(--radius-xl);
-            border: 2px dashed var(--color-border);
-            padding: var(--space-3xl) var(--space-xl);
-            transition: all 0.3s ease;
-            background: rgba(248, 250, 252, 0.5);
-        }
-
-        .el-upload-dragger:hover {
-            border-color: var(--color-primary);
-            background: rgba(79, 70, 229, 0.03);
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.08);
-        }
-
-        .el-upload__text em {
-            color: var(--color-primary);
-            font-style: normal;
-            font-weight: var(--font-weight-semibold);
-        }
-
-        .el-tag {
-            border-radius: var(--radius-full);
-            padding: var(--space-xs) var(--space-lg);
-            font-size: var(--font-size-sm);
-            font-weight: var(--font-weight-medium);
-            border: none;
-        }
-
-        .el-tag--primary {
-            background: var(--color-primary-light);
-            color: var(--color-primary);
-        }
-
-        .el-progress {
-            --el-progress-text-color: var(--color-text-secondary);
-        }
-
-        .evaluation-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: var(--space-xl);
-            margin: var(--space-xl) 0;
-        }
-
-        .interview-review-item {
-            margin-bottom: var(--space-sm);
-            padding: var(--space-md);
-            border-radius: var(--radius-md);
-        }
-
-        .interview-review-item.interviewer {
-            background: rgba(79, 70, 229, 0.05);
-            border-left: 3px solid var(--color-primary);
-        }
-
-        .interview-review-item.candidate {
-            background: rgba(16, 185, 129, 0.05);
-            border-left: 3px solid var(--color-success);
-            margin-left: var(--space-lg);
-        }
-
-        .interview-review-role {
-            font-weight: var(--font-weight-semibold);
-            margin-bottom: var(--space-xs);
-            font-size: var(--font-size-xs);
-        }
-
-        .interview-review-role.interviewer {
-            color: var(--color-primary);
-        }
-
-        .interview-review-role.candidate {
-            color: var(--color-success);
-        }
-
-        .interview-review-content {
-            white-space: pre-wrap;
-            line-height: 1.5;
-            color: var(--color-text-primary);
-            font-size: var(--font-size-xs);
-        }
-
-        .action-bar {
-            display: flex;
-            justify-content: center;
-            gap: var(--space-md);
-            margin-top: var(--space-md);
-        }
-
-        .step-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: var(--space-sm);
-            margin-top: var(--space-md);
-        }
-
-        /* 面试官状态：读简历阶段小头像上下蹦跶 */
-        @keyframes bounce {
-            0%, 100% { transform: translateY(0); }
-            50%      { transform: translateY(-6px); }
-        }
-        /* 三个点点闪烁指示器 */
-        @keyframes blink {
-            0%, 100% { opacity: 1;    }
-            50%      { opacity: 0.15; }
+        .mode-card h2 {
+            margin: 0; font-size: var(--fs-2xl); font-weight: var(--fw-bold); letter-spacing: -0.02em; color: var(--text);
+        }
+        .mode-card p.lede {
+            margin: var(--sp-2) 0 0; color: var(--text-3); font-size: var(--fs-md); max-width: 64ch;
+        }
+        .mode-grid {
+            margin-top: var(--sp-6);
+            display: grid; gap: var(--sp-4);
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        @media (max-width: 980px) { .mode-grid { grid-template-columns: 1fr; } }
+        .mode-tile {
+            text-align: left;
+            background: #fff; border: 0.5px solid var(--border); border-radius: var(--r-xl);
+            padding: var(--sp-5); cursor: pointer;
+            display: flex; flex-direction: column; gap: var(--sp-2);
+            transition: transform var(--dur-2) var(--ease-spring), box-shadow var(--dur-2) var(--ease-out), border-color var(--dur-2) var(--ease-out);
+        }
+        .mode-tile:hover { border-color: var(--accent); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+        .mode-tile[aria-pressed="true"] {
+            border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent-soft);
+        }
+        .mode-tile .mt-icon {
+            width: 36px; height: 36px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;
+            background: var(--accent-soft); color: var(--accent); font-weight: 700;
+        }
+        .mode-tile .mt-title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); color: var(--text); }
+        .mode-tile .mt-sub   { font-size: var(--fs-sm); color: var(--text-3); line-height: 1.55; }
+
+        /* ---------- Topic selector for by_topic mode (replace ugly select) ---------- */
+        .topic-strip {
+            display: flex; flex-wrap: wrap; gap: var(--sp-2);
+            padding: var(--sp-3); background: var(--bg-soft); border-radius: var(--r-lg);
+            max-height: 260px; overflow-y: auto; border: 0.5px solid var(--border);
+        }
+        .chip {
+            appearance: none; background: #fff; border: 0.5px solid var(--border);
+            border-radius: var(--r-pill); padding: 5px 12px;
+            font-size: var(--fs-xs); color: var(--text-2); cursor: pointer;
+            transition: background var(--dur-1), color var(--dur-1), border-color var(--dur-1);
+        }
+        .chip:hover { border-color: var(--accent); color: var(--text); }
+        .chip[aria-checked="true"] { background: var(--accent); border-color: transparent; color: #fff; }
+        .chip[aria-checked="true"] .chip__count  { background: rgba(255,255,255,0.22); color: #fff; }
+        .chip__count {
+            display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px;
+            background: var(--bg-soft); font-size: 11px; color: var(--text-3);
+        }
+
+        /* ---------- Quiz control (form below mode card) ---------- */
+        .control-card {
+            background: #fff; border: 0.5px solid var(--border); border-radius: var(--r-2xl);
+            padding: var(--sp-6); box-shadow: var(--shadow-xs); margin-top: var(--sp-5);
+        }
+        .control-card h3 {
+            margin: 0 0 var(--sp-3); font-size: var(--fs-lg); font-weight: var(--fw-semibold); letter-spacing: -0.005em;
+        }
+        .control-grid {
+            display: grid; grid-template-columns: repeat(12, minmax(0,1fr)); gap: var(--sp-4); align-items: end;
+        }
+        .control-grid .cg-3  { grid-column: span 3; }
+        .control-grid .cg-4  { grid-column: span 4; }
+        .control-grid .cg-6  { grid-column: span 6; }
+        .control-grid .cg-8  { grid-column: span 8; }
+        .control-grid .cg-12 { grid-column: span 12; }
+        @media (max-width: 780px) {
+            .control-grid .cg-3, .control-grid .cg-4, .control-grid .cg-6, .control-grid .cg-8 { grid-column: span 12; }
         }
     </style>
 </head>
 <body>
-    <div id="app">
-        <div class="main-container">
-            <div class="header" v-if="step === 1">
-                <div class="header-icon">🤖</div>
-                <h1>AI 模拟面试</h1>
-                <p>基于简历内容，AI 面试官会针对性地拷打八股和项目经验</p>
+<div id="app">
+    <!-- ============ Global nav (flat, top bar) ============ -->
+    <header class="nav" role="banner">
+        <div class="nav__brand" style="cursor:default; user-select:none;">
+            <span>Interview&nbsp;Helper</span>
+        </div>
+        <nav class="nav__tabs" role="tablist" aria-label="主功能">
+            <button
+                class="nav__tab"
+                role="tab"
+                :aria-current="currentApp === 'interview' ? 'page' : undefined"
+                :aria-selected="currentApp === 'interview'"
+                @click="currentApp = 'interview'">
+                面试助手
+            </button>
+            <button
+                class="nav__tab"
+                role="tab"
+                :aria-current="currentApp === 'quiz' ? 'page' : undefined"
+                :aria-selected="currentApp === 'quiz'"
+                @click="currentApp = 'quiz'; onQuizTabFocused();">
+                刷题助手
+            </button>
+        </nav>
+        <div class="nav__stat" aria-live="polite">
+            <span class="chip">
+                <span class="dot" :class="serviceStatus.color"></span>
+                {{ serviceStatus.text }}
+            </span>
+        </div>
+    </header>
+
+    <!-- ============ 面试助手 ============ -->
+    <main v-if="currentApp === 'interview'" class="shell shell--single" aria-label="模拟面试工作区">
+        <section class="content legacy interview-shell" aria-label="面试助手主区域">
+            <!-- Horizontal StepBar (replace left sidebar) -->
+            <div class="stepbar" role="navigation" aria-label="面试流程">
+                <button
+                    v-for="s in interviewSteps"
+                    :key="s.id"
+                    type="button"
+                    class="step"
+                    :aria-current="interviewStep === s.id ? 'step' : undefined"
+                    :data-done="interviewStep > s.id ? 'true' : 'false'"
+                    @click="interviewStep = s.id">
+                    <span class="step__dot">{{ s.id }}</span>
+                    <span class="step__main">
+                        <span class="step__label">{{ s.label }}</span>
+                        <span class="step__hint">{{ s.hint }}</span>
+                    </span>
+                </button>
             </div>
 
-            <!-- 简化步骤导航（非步骤1时显示） -->
-            <div class="step-nav-compact" v-if="step > 1">
-                <div :class="['step-dot', step >= 1 ? 'active' : '']" @click="step = 1" title="模型设置">1</div>
-                <div class="step-line"></div>
-                <div :class="['step-dot', step >= 2 ? 'active' : '']">2</div>
-                <div class="step-line"></div>
-                <div :class="['step-dot', step >= 3 ? 'active' : '']">3</div>
-                <div class="step-line"></div>
-                <div :class="['step-dot', step >= 4 ? 'active' : '']">4</div>
-            </div>
-
-            <!-- 步骤导航（仅步骤1显示） -->
-            <div class="step-nav" v-if="step === 1" :style="{ '--progress': (step - 1) / 3 }">
-                <div class="step-nav-item">
-                    <div :class="['dot', step >= 1 ? 'active' : 'inactive']">1</div>
-                    <span :class="['label', step >= 1 ? 'active' : '']">模型设置</span>
-                </div>
-                <div class="step-nav-item">
-                    <div :class="['dot', step >= 2 ? 'active' : 'inactive']">2</div>
-                    <span :class="['label', step >= 2 ? 'active' : '']">上传简历</span>
-                </div>
-                <div class="step-nav-item">
-                    <div :class="['dot', step >= 3 ? 'active' : 'inactive']">3</div>
-                    <span :class="['label', step >= 3 ? 'active' : '']">模拟面试</span>
-                </div>
-                <div class="step-nav-item">
-                    <div :class="['dot', step >= 4 ? 'active' : 'inactive']">4</div>
-                    <span :class="['label', step >= 4 ? 'active' : '']">面试报告</span>
-                </div>
-            </div>
-
-            <!-- 步骤 1: 模型设置 -->
-            <div class="card" v-if="step === 1">
-                <div class="step-title">1. 模型设置</div>
-                <p style="color: var(--color-text-secondary); margin-bottom: var(--space-xl); font-size: var(--font-size-base);">请手动填写 API 信息。信息仅在当前浏览器中保存，不会上传。</p>
-                <el-form label-position="top">
-                    <el-form-item label="API Key">
-                        <el-input v-model="form.apiKey" placeholder="sk-..." type="password" show-password></el-input>
-                    </el-form-item>
-                    <el-form-item label="API Base URL">
-                        <el-input v-model="form.baseUrl" placeholder="https://api.openai.com/v1"></el-input>
-                    </el-form-item>
-                    <el-form-item label="模型名称">
-                        <el-input v-model="form.model" placeholder="gpt-4o / deepseek-chat / qwen-plus"></el-input>
-                    </el-form-item>
-                </el-form>
-                <div class="step-actions">
-                    <el-button type="primary" :disabled="!form.apiKey" @click="testConnection" :loading="loading">测试连接</el-button>
-                    <el-button type="success" :disabled="!form.apiKey" @click="step = 2">下一步：上传简历</el-button>
-                </div>
-            </div>
-
-            <!-- 步骤 2: 上传简历 -->
-            <div class="card" v-if="step === 2">
-                <div class="step-title">2. 上传简历</div>
-                <el-tabs v-model="resumeTab">
-                    <el-tab-pane label="上传 PDF" name="pdf">
-                        <el-upload drag accept=".pdf" :auto-upload="false" :on-change="handlePdfUpload">
-                            <el-icon class="el-icon--upload" size="32"><upload-filled /></el-icon>
-                            <div class="el-upload__text">拖拽 PDF 到这里或 <em>点击上传</em></div>
-                            <div style="color: var(--color-text-muted); font-size: var(--font-size-sm); margin-top: var(--space-sm);">支持 .pdf 格式文件</div>
-                        </el-upload>
-                    </el-tab-pane>
-                    <el-tab-pane label="粘贴文本" name="text">
-                        <el-input v-model="resumeText" type="textarea" :rows="6" placeholder="粘贴简历内容，可以是一段项目经历或完整简历..."></el-input>
-                    </el-tab-pane>
-                </el-tabs>
-                <div class="step-actions">
-                    <el-button type="primary" @click="parseResume" :loading="loading">{{ resumeTab === 'text' ? '解析简历' : '重新解析简历' }}</el-button>
-                    <el-button @click="step = 1">上一步</el-button>
-                </div>
-
-                <!-- 选择应聘岗位（永远显示，防止整块消失导致用户看不到） -->
-                <div class="report-card" style="margin-top: var(--space-lg);">
-                    <div class="report-card-title">💼 选择应聘岗位</div>
-                    <el-form label-position="top" style="margin-top: var(--space-sm);">
-                        <!-- 「当前已选」显性显示块：永远渲染，不依赖 el-select 内部行为 -->
-                        <div v-if="currentPositionName() && !positionsError && !positionsLoading" style="margin-bottom: var(--space-md); display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap;">
-                            <span style="color: var(--color-text-secondary); font-size: var(--font-size-sm);">当前目标岗位：</span>
-                            <el-tag type="primary" effect="light" size="large" style="font-size: var(--font-size-base); padding: 4px 14px;">{{ currentPositionName() }}</el-tag>
-                            <el-tag v-if="currentPositionMeta() && currentPositionMeta().maxQ" type="success" effect="plain" size="default">约 {{ currentPositionMeta().maxQ }} 题</el-tag>
-                            <el-tag v-if="currentPositionMeta() && currentPositionMeta().req" type="warning" effect="plain" size="default">{{ currentPositionMeta().req }} 项硬性要求</el-tag>
-                            <span style="color: var(--color-text-muted); font-size: var(--font-size-sm);">（点击下方下拉可切换）</span>
-                        </div>
-                        <el-form-item label="请选择目标岗位（决定提问优先级和题数上限）">
-                            <!-- 错误态：红色提示 + 重试按钮 -->
-                            <div v-if="positionsError && !positionsLoading" style="display: flex; align-items: center; gap: var(--space-md); flex-wrap: wrap;">
-                                <el-result icon="error" :title="'加载失败'" :sub-title="positionsError" style="flex: 1; padding: 0; margin: 0;">
-                                    <template #extra>
-                                        <el-button type="primary" @click="retryLoadPositions">点击重试</el-button>
-                                    </template>
-                                </el-result>
-                            </div>
-                            <!-- 成功态（含 loading / 空数组）：永远显示下拉框，错误时也显示一个禁用的 -->
-                            <div v-else>
-                                <el-select
-                                    v-model="targetPosition"
-                                    placeholder="请选择岗位"
-                                    style="width: 100%;"
-                                    :loading="positionsLoading"
-                                    :disabled="positionsLoading || !positions.length"
-                                    :teleported="false"
-                                >
-                                    <el-option
-                                        v-for="p in positions"
-                                        :key="p.id || p.name"
-                                        :label="`${p.name} · ${p.location || '深圳'} · ${p.requirements_count || 0} 项硬性要求 · ${p.suggested_max_questions || (p.id === 'ai_fullstack_engineer' || p.id === 'agent_dev_engineer' ? 18 : 14)} 题`"
-                                        :value="p.id || p.name"
-                                    />
-                                </el-select>
-                                <div v-if="!positionsLoading && !positions.length" style="color: var(--color-text-muted); font-size: var(--font-size-sm); margin-top: var(--space-xs);">
-                                    暂无可选岗位，请确认后端是否已启动，或 <el-button type="primary" link size="small" @click="retryLoadPositions">点击重试</el-button>
-                                </div>
-                            </div>
+            <!-- 原有 Vue 4 步流程，原 API 100% 兼容，仅换了外观 -->
+            <div class="main-container" style="max-width: none; padding: 0;">
+                <!-- 步骤 1: 模型设置 -->
+                <div class="card" v-if="interviewStep === 1">
+                    <div class="step-title">1 · 模型设置</div>
+                    <p style="color: var(--text-3); margin-bottom: var(--space-xl); font-size: var(--fs-base);">请手动填写模型 API 信息。凭据仅保存在当前浏览器的 localStorage，不会上传到服务器。</p>
+                    <el-form label-position="top">
+                        <el-form-item label="API Key">
+                            <el-input v-model="form.apiKey" placeholder="sk-..." type="password" show-password></el-input>
+                        </el-form-item>
+                        <el-form-item label="API Base URL">
+                            <el-input v-model="form.baseUrl" placeholder="https://api.openai.com/v1"></el-input>
+                        </el-form-item>
+                        <el-form-item label="模型名称">
+                            <el-input v-model="form.model" placeholder="gpt-4o / deepseek-chat / qwen-plus"></el-input>
                         </el-form-item>
                     </el-form>
+                    <div class="step-actions">
+                        <el-button type="primary" :disabled="!form.apiKey" @click="testConnection" :loading="loading">测试连接</el-button>
+                        <el-button type="success" :disabled="!form.apiKey" @click="interviewStep = 2">下一步：上传简历</el-button>
+                    </div>
                 </div>
 
-                <!-- 解析结果 -->
-                <div class="report-card" v-if="resumeParsed" style="margin-top: var(--space-lg);">
-                    <div class="report-card-title">📄 简历解析结果</div>
-                    <div class="info-grid">
-                        <div class="info-item">
-                            <div class="info-label">姓名</div>
-                            <div class="info-value">{{ resume.name || '未识别' }}</div>
-                        </div>
-                        <div class="info-item">
-                            <div class="info-label">工作年限</div>
-                            <div class="info-value">{{ resume.experience_years || '未识别' }}</div>
-                        </div>
-                        <div class="info-item">
-                            <div class="info-label">学历</div>
-                            <div class="info-value">{{ resume.education || '未识别' }}</div>
-                        </div>
+                <!-- 步骤 2: 上传简历 -->
+                <div class="card" v-if="interviewStep === 2">
+                    <div class="step-title">2 · 上传简历与选择岗位</div>
+                    <el-tabs v-model="resumeTab">
+                        <el-tab-pane label="上传 PDF" name="pdf">
+                            <el-upload drag accept=".pdf" :auto-upload="false" :on-change="handlePdfUpload">
+                                <el-icon class="el-icon--upload" size="32"><upload-filled /></el-icon>
+                                <div class="el-upload__text">拖拽 PDF 到这里或 <em>点击上传</em></div>
+                                <div style="color: var(--text-3); font-size: var(--fs-sm); margin-top: var(--space-sm);">支持 .pdf 格式文件</div>
+                            </el-upload>
+                        </el-tab-pane>
+                        <el-tab-pane label="粘贴文本" name="text">
+                            <el-input v-model="resumeText" type="textarea" :rows="6" placeholder="粘贴简历内容，可以是一段项目经历或完整简历..."></el-input>
+                        </el-tab-pane>
+                        <el-tab-pane label="已保存简历" name="saved">
+                            <div v-if="!savedResumes.length" class="state" style="padding: var(--space-8);">
+                                <div class="state__title" style="margin-top:0;">还没有保存的简历</div>
+                                <div class="state__sub">上传 PDF 或粘贴文本后会自动缓存到这里，下次可直接选用。</div>
+                            </div>
+                            <div v-else>
+                                <p style="color: var(--text-3); font-size: var(--fs-sm); margin-bottom: var(--space-md);">点击下方任一简历即可选用，再选择下方岗位即可开始面试</p>
+                                <div v-for="r in savedResumes" :key="r.hash" @click="selectSavedResume(r.hash)" style="border: 0.5px solid var(--border); border-radius: var(--r-xl); padding: var(--space-4); margin-bottom: var(--space-3); cursor: pointer; transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);">
+                                    <div style="display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1);">
+                                        <span style="font-weight: var(--fw-semibold); font-size: var(--fs-md); color: var(--text);">{{ r.name || '未命名简历' }}</span>
+                                    </div>
+                                    <div v-if="r.experience_years || r.education" style="color: var(--text-3); font-size: var(--fs-sm); margin-bottom: var(--space-1);">
+                                        {{ r.experience_years || '年限未识别' }} · {{ r.education || '学历未识别' }}
+                                    </div>
+                                    <div v-if="r.skills && r.skills.length" style="display: flex; flex-wrap: wrap; gap: var(--space-1); margin-bottom: var(--space-1);">
+                                        <el-tag v-for="s in r.skills.slice(0, 10)" :key="s" size="small" type="primary" effect="light">{{ s }}</el-tag>
+                                    </div>
+                                    <div v-if="r.summary" style="color: var(--text-3); font-size: var(--fs-sm); line-height: 1.5; max-height: 64px; overflow: hidden;">{{ r.summary }}</div>
+                                </div>
+                            </div>
+                        </el-tab-pane>
+                    </el-tabs>
+                    <div class="step-actions">
+                        <el-button v-if="resumeTab !== 'saved'" type="primary" @click="parseResume" :loading="loading">{{ resumeTab === 'text' ? '解析简历' : '重新解析简历' }}</el-button>
+                        <el-button v-if="resumeTab === 'saved'" @click="loadSavedResumes" :loading="loading">刷新列表</el-button>
+                        <el-button @click="interviewStep = 1">上一步</el-button>
                     </div>
-                    <div style="margin-top: var(--space-md);">
-                        <div class="info-label" style="margin-bottom: var(--space-xs);">技术栈</div>
-                        <el-tag class="skill-tag" v-for="skill in resume.skills" :key="skill" type="primary">{{ skill }}</el-tag>
-                        <span v-if="!resume.skills.length" style="color: var(--color-text-muted);">未识别</span>
-                    </div>
-                    <div style="margin-top: var(--space-md);" v-if="resume.projects && resume.projects.length">
-                        <div class="info-label" style="margin-bottom: var(--space-xs);">项目经历</div>
-                        <div class="info-value">{{ resume.projects.join(', ') }}</div>
-                    </div>
-                    <div style="margin-top: var(--space-md);" v-if="resume.summary">
-                        <div class="info-label" style="margin-bottom: var(--space-xs);">简历摘要</div>
-                        <div style="color: var(--color-text-secondary); line-height: 1.5; font-size: var(--font-size-sm);">{{ resume.summary }}</div>
-                    </div>
-                    <div class="action-bar">
-                        <el-button type="success" @click="startInterview" :loading="loading" size="large">开始面试{{ currentPositionName() ? ' · ' + currentPositionName() : '' }}</el-button>
-                    </div>
-                </div>
-            </div>
 
-            <!-- 步骤 3: 面试对话 -->
-            <div class="card interview-step" v-if="step === 3">
-                <div class="step-title">3. 模拟面试<span v-if="currentPositionName()" style="float: right; font-size: var(--font-size-sm); font-weight: 500; color: var(--color-primary);">应聘岗位：{{ currentPositionName() }}</span></div>
-                <div class="chat-container" ref="chatContainer">
-                    <div v-for="(msg, index) in chatMessages" :key="index" class="message">
-                        <div v-if="msg.role === 'interviewer'" class="message-avatar interviewer">👨‍💼</div>
-                        <div v-else class="message-avatar candidate">🙋</div>
-                        <div :class="['message-body', msg.role]">
-                            {{ msg.content }}
-                        </div>
-                    </div>
-                    <div v-if="interviewerStatus === 'reading_resume'" class="message">
-                        <div class="message-avatar interviewer" style="animation: bounce 1.2s ease-in-out infinite;">📖</div>
-                        <div class="message-body interviewer" style="color: var(--color-text-muted);">
-                            面试官正在认真阅读你的简历，稍后开始提问…
-                            <span style="display:inline-block; min-width: 42px;">
-                                <span style="animation: blink 1.2s 0s infinite;">●</span>
-                                <span style="animation: blink 1.2s 0.4s infinite; opacity:.5;">●</span>
-                                <span style="animation: blink 1.2s 0.8s infinite; opacity:.3;">●</span>
-                            </span>
-                        </div>
-                    </div>
-                    <div v-if="interviewerStatus === 'typing'" class="message">
-                        <div class="message-avatar interviewer">👨‍💼</div>
-                        <div class="message-body interviewer" style="color: var(--color-text-muted);">面试官正在输入...</div>
-                    </div>
-                </div>
-                <div class="chat-input">
-                    <el-input v-model="userAnswer" placeholder="输入你的回答..." @keyup.enter="sendAnswer" :disabled="finished || streaming"></el-input>
-                    <el-button type="primary" @click="sendAnswer" :loading="streaming" :disabled="finished || !userAnswer.trim()">发送</el-button>
-                </div>
-                <div class="action-bar">
-                    <el-button @click="finishInterview" type="success" v-if="!finished">结束面试并查看报告</el-button>
-                    <el-button @click="reset" type="info">重新开始</el-button>
-                </div>
-            </div>
+                    <div class="report-card" style="margin-top: var(--space-lg);">
+                        <div class="report-card-title">选择应聘岗位</div>
+                        <el-radio-group v-model="jdMode" style="margin-bottom: var(--space-md);">
+                            <el-radio-button label="preset">预置岗位</el-radio-button>
+                            <el-radio-button label="custom">自定义 JD</el-radio-button>
+                        </el-radio-group>
 
-            <!-- 步骤 4: 面试报告 -->
-            <div class="card" v-if="step === 4">
-                <div class="step-title">4. 面试报告</div>
-                <div v-if="!evaluation" style="text-align: center; padding: var(--space-3xl); color: var(--color-text-muted); font-size: var(--font-size-lg);">正在生成报告...</div>
-                <div v-else>
-                    <!-- 面试官建议 -->
-                    <div class="report-card">
-                        <div class="report-card-title">💡 面试官建议</div>
-                        <div v-if="evaluation.improvement_suggestions && evaluation.improvement_suggestions.length">
-                            <div class="list-card">
-                                <ul>
-                                    <li v-for="(item, idx) in evaluation.improvement_suggestions" :key="'i'+idx">{{ item }}</li>
-                                </ul>
+                        <el-form v-if="jdMode === 'preset'" label-position="top" style="margin-top: var(--space-sm);">
+                            <div v-if="currentPositionName() && !positionsError && !positionsLoading" style="margin-bottom: var(--space-md); display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
+                                <span style="color: var(--text-3); font-size: var(--fs-sm);">当前目标岗位：</span>
+                                <el-tag type="primary" effect="light" size="large" style="font-size: var(--fs-base); padding: 4px 14px;">{{ currentPositionName() }}</el-tag>
+                                <el-tag v-if="currentPositionMeta() && currentPositionMeta().maxQ" type="success" effect="plain" size="default">约 {{ currentPositionMeta().maxQ }} 题</el-tag>
+                                <el-tag v-if="currentPositionMeta() && currentPositionMeta().req" type="warning" effect="plain" size="default">{{ currentPositionMeta().req }} 项硬性要求</el-tag>
+                            </div>
+                            <el-form-item label="请选择目标岗位（决定提问优先级和题数上限）">
+                                <div v-if="positionsError && !positionsLoading" style="display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;">
+                                    <el-result icon="error" :title="'加载失败'" :sub-title="positionsError" style="flex: 1; padding: 0; margin: 0;">
+                                        <template #extra>
+                                            <el-button type="primary" @click="retryLoadPositions">点击重试</el-button>
+                                        </template>
+                                    </el-result>
+                                </div>
+                                <div v-else>
+                                    <el-select
+                                        v-model="targetPosition"
+                                        placeholder="请选择岗位"
+                                        style="width: 100%;"
+                                        :loading="positionsLoading"
+                                        :disabled="positionsLoading || !positions.length"
+                                        :teleported="false"
+                                    >
+                                        <el-option
+                                            v-for="p in positions"
+                                            :key="p.id || p.name"
+                                            :label="`${p.name} · ${p.location || '深圳'} · ${p.requirements_count || 0} 项硬性要求 · ${p.suggested_max_questions || (p.id === 'ai_fullstack_engineer' || p.id === 'agent_dev_engineer' ? 18 : 14)} 题`"
+                                            :value="p.id || p.name"
+                                        />
+                                    </el-select>
+                                    <div v-if="!positionsLoading && !positions.length" style="color: var(--text-3); font-size: var(--fs-sm); margin-top: var(--space-xs);">
+                                        暂无可选岗位，请确认后端已启动，或 <el-button type="primary" link size="small" @click="retryLoadPositions">点击重试</el-button>
+                                    </div>
+                                </div>
+                            </el-form-item>
+                        </el-form>
+
+                        <el-form v-if="jdMode === 'custom'" label-position="top" style="margin-top: var(--space-sm);">
+                            <el-form-item label="岗位名称">
+                                <el-input v-model="customJdName" placeholder="如：资深 Java 后端工程师 / AI Agent 架构师"></el-input>
+                            </el-form-item>
+                            <el-form-item label="JD 内容（岗位描述 + 要求 + 加分项，纯文本即可）">
+                                <el-input v-model="customJdText" type="textarea" :rows="8" placeholder="粘贴或输入完整的 JD 内容...&#10;&#10;例如：&#10;岗位描述：&#10;1. 负责后端微服务架构设计与开发...&#10;&#10;岗位要求：&#10;1. 熟悉 Java/Spring Boot...&#10;2. 有分布式系统经验..."></el-input>
+                            </el-form-item>
+                        </el-form>
+                    </div>
+
+                    <div class="report-card" v-if="resumeParsed" style="margin-top: var(--space-lg);">
+                        <div class="report-card-title">传给 LLM 的项目段落</div>
+                        <p style="color: var(--text-3); font-size: var(--fs-sm); margin-bottom: var(--space-md);">
+                            面试开始时，下面这段文本会注入到 Prompt 的占位符 <code style="font-family:var(--font-mono); font-size:12px; padding:2px 6px; border-radius:6px; background:var(--bg-soft); border:0.5px solid var(--border);">resume_projects</code> 中，LLM 据此对你做项目深挖。可自行编辑裁剪。
+                        </p>
+                        <div class="info-label" style="margin-bottom: var(--space-xs);">项目段落（可编辑，注入 Prompt 中的 resume_projects）</div>
+                        <el-input
+                            v-model="resumeProjects"
+                            type="textarea"
+                            :rows="10"
+                            placeholder="自动解析的项目段落会填入此处，可自行编辑裁剪"
+                        ></el-input>
+                        <el-collapse style="margin-top: var(--space-md);">
+                            <el-collapse-item title="查看简历原文（可从此处裁剪项目内容粘贴到上方）" name="raw">
+                                <pre style="background: var(--bg-soft); border: 0.5px solid var(--border); border-radius: var(--r-md); padding: var(--space-2); font-family: var(--font-mono); font-size: 13px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; margin: 0;">{{ resume.raw_text || '（空）' }}</pre>
+                            </el-collapse-item>
+                        </el-collapse>
+                        <div class="action-bar">
+                            <el-button type="success" @click="startInterview" :loading="loading" size="large">开始面试{{ currentPositionName() ? ' · ' + currentPositionName() : '' }}</el-button>
+                        </div>
+                        <div v-if="loadingStatus" style="text-align: center; padding: var(--space-3); color: var(--accent); font-size: var(--fs-base);">{{ loadingStatus }}</div>
+                    </div>
+                </div>
+
+                <!-- 步骤 3: 面试对话（气泡式 iMessage 风格） -->
+                <div class="card interview-step interview-step--chat" v-if="interviewStep === 3">
+                    <div class="chat-header">
+                        <div class="chat-header__left">
+                            <div class="chat-avatar chat-avatar--interviewer" title="面试官">AI</div>
+                            <div>
+                                <div class="chat-header__name">AI 面试官
+                                    <template v-if="currentPositionName()">
+                                        <span class="chat-header__badge">面 · {{ currentPositionName() }}</span>
+                                    </template>
+                                </div>
+                                <div class="chat-header__status">
+                                    <span class="dot" :class="streaming || interviewerStatus === 'typing' ? 'orange' : 'green'"></span>
+                                    {{ (streaming || interviewerStatus === 'typing') ? (loadingStatus || '面试官正在输入…') : '在线，随时回复' }}
+                                </div>
                             </div>
                         </div>
-                        <div v-else style="color: var(--color-text-muted); text-align: center; padding: var(--space-lg); font-size: var(--font-size-sm);">
-                            {{ evaluation.comment || '暂无补强建议' }}
+                        <div class="chat-header__right">
+                            <el-button type="success" size="default" @click="finishInterview" v-if="!finished">结束本轮</el-button>
+                            <el-button size="default" @click="resetInterviewFlow">重新开始</el-button>
                         </div>
                     </div>
 
-                    <div class="action-bar">
-                        <el-button type="primary" @click="reset" size="large">重新开始</el-button>
+                    <div class="chat-wrap" ref="chatContainer">
+                        <template v-for="(msg, index) in chatMessages" :key="index">
+                            <div :class="['chat-line', msg.role === 'interviewer' ? 'is-interviewer' : 'is-me']">
+                                <div v-if="msg.role === 'interviewer'" class="chat-avatar chat-avatar--interviewer" title="面试官">AI</div>
+                                <div class="chat-col">
+                                    <div class="chat-meta">
+                                        <span>{{ msg.role === 'interviewer' ? '面试官' : '我' }}</span>
+                                        <time>{{ msg._time || '' }}</time>
+                                    </div>
+                                    <div class="chat-bubble">{{ msg.content }}</div>
+                                </div>
+                                <div v-if="msg.role === 'candidate'" class="chat-avatar chat-avatar--me" title="你">我</div>
+                            </div>
+                        </template>
+
+                        <div v-if="interviewerStatus === 'typing'" class="chat-line is-interviewer">
+                            <div class="chat-avatar chat-avatar--interviewer" title="面试官">AI</div>
+                            <div class="chat-col">
+                                <div class="chat-meta"><span>面试官</span><time>正在输入…</time></div>
+                                <div class="chat-bubble chat-bubble--typing">
+                                    <span class="chat-dots"><i></i><i></i><i></i></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chat-sendbar">
+                        <el-input
+                            v-model="userAnswer"
+                            type="textarea"
+                            :autosize="{ minRows: 1, maxRows: 5 }"
+                            placeholder="输入你的回答（Enter 发送，Shift + Enter 换行）"
+                            @keydown.enter.exact.prevent="sendAnswer"
+                            :disabled="finished || streaming">
+                        </el-input>
+                        <el-button type="primary" size="large" @click="sendAnswer" :loading="streaming" :disabled="finished || !userAnswer.trim()">
+                            发送
+                        </el-button>
                     </div>
                 </div>
+
+                <!-- 步骤 4: 面试结束（只保留再来一次，不渲染综合评价） -->
+                <div class="card interview-step interview-step--done" v-if="interviewStep === 4">
+                    <div class="interview-done__hero">
+                        <div class="interview-done__icon">🎉</div>
+                        <div class="interview-done__title">本轮面试已结束</div>
+                        <div class="interview-done__sub">想再练一轮？直接「再来一次」，可选填定向提示词，让下一轮聚焦你想深挖的方向。</div>
+                    </div>
+
+                    <div class="interview-done__box">
+                        <label class="field-label">定向调整（可选）</label>
+                        <el-input
+                            v-model="retryPrompt"
+                            type="textarea"
+                            :rows="5"
+                            placeholder="例如：多问 Redis 底层原理和源码实现；项目部分重点追问技术选型的理由；降低八股比例，多问实际线上问题排查；针对我简历里的 RAG 项目深挖向量检索细节"></el-input>
+                        <div class="interview-done__actions">
+                            <el-button type="success" size="large" @click="restartInterview" :loading="loading" :disabled="!resumeParsed">再来一次</el-button>
+                            <el-button size="large" @click="gotoResumeUpload">回到投递简历</el-button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="footer" style="text-align:center; color: var(--text-3); padding: var(--space-6) 0 var(--space-2); font-size: var(--fs-xs); letter-spacing: 0.02em;">面试助手 · 本地部署 · 数据安全</div>
             </div>
+        </section>
+    </main>
 
-            <div class="footer">AI 模拟面试 · 本地部署 · 数据安全</div>
-        </div>
-    </div>
+    <!-- ============ 刷题助手（全屏：无侧边栏，启动卡置顶） ============ -->
+    <main v-else class="shell shell--single wide" aria-label="刷题助手工作区">
+        <section class="content" aria-label="刷题控制与结果">
+            <!-- ============ Home：默认随机抽题为主（含 随机抽题 hero + 两种入口 + 模式切换） ============ -->
+            <template v-if="quizStage === 'home'">
+                <!-- Hero：随机抽题（主打） — 单栏，重心在「开始练习」按钮，去掉右侧用户觉得「莫名其妙」的数量格子 -->
+                <div class="quiz-hero quiz-hero--single card">
+                    <div class="quiz-hero__left">
+                        <div class="quiz-hero__kicker">🎲 主打 · 随机抽题</div>
+                        <h1 class="quiz-hero__title">点开即练，通勤 5 分钟也能过一遍</h1>
+                        <p class="quiz-hero__sub">
+                            算法保证不重复随机抽，出题后进入「单题专注练习」模式，做完一题自动跳到下一题。
+                        </p>
+                        <div class="quiz-hero__actions">
+                            <button class="btn btn--primary btn--lg" @click="startRandomNow()" :disabled="questionsLoading">
+                                <span v-if="questionsLoading">加载中…</span>
+                                <span v-else>🎯 开始随机抽题（{{ randomCount }} 道）</span>
+                            </button>
+                            <button class="btn btn--lg" @click="pickRandomBigTopic()" :disabled="!topicsReady">
+                                🤞 随机抽一个主题练
+                            </button>
+                        </div>
+                        <div class="quiz-hero__chiprow">
+                            <span class="chip chip--ghost" style="pointer-events:none;">试试这些主题：</span>
+                            <button
+                                v-for="t in quickTopics"
+                                :key="t.big_topic"
+                                class="chip"
+                                type="button"
+                                @click="() => { mode = 'by_topic'; pickBig = t.big_topic; pickMid = ''; nextTick(() => fetchQuestions('by_topic')); }">
+                                {{ truncate(t.big_topic, 14) }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
-    <script>
-        const { createApp } = Vue;
-        const { ElMessage } = ElementPlus;
+                <!-- Segmented Picker：随机 / 主题 / 自定义 三种模式切换（用户要更多模式切换入口也在这里） -->
+                <div class="seg" ref="segRef" role="tablist" aria-label="出题模式">
+                    <button type="button" role="tab" :aria-pressed="mode === 'random'" @click="mode = 'random'">① 随机抽题</button>
+                    <button type="button" role="tab" :aria-pressed="mode === 'by_topic'" @click="mode = 'by_topic'">② 按主题 / 章节</button>
+                    <button type="button" role="tab" :aria-pressed="mode === 'custom'" @click="mode = 'custom'">③ 自定义出题</button>
+                    <span class="seg__indicator" :style="segIndicatorStyle"></span>
+                </div>
 
-        createApp({
-            data() {
-                return {
-                    step: 1,
-                    loading: false,
-                    positionsLoading: false,
-                    positionsError: '',
-                    positions: [],
-                    targetPosition: '',
-                    resumeTab: 'pdf',
-                    resumeText: '',
-                    pdfData: '',
-                    resumeParsed: false,
-                    resume: {},
-                    chatMessages: [],
-                    userAnswer: '',
-                    streaming: false,
-                    // 面试官状态：idle=空闲不显示 / reading_resume=📖 看简历+排提问顺序 / typing=✍️ 正在输入问题
-                    interviewerStatus: 'idle',
-                    finished: false,
-                    evaluation: null,
-                    form: {
-                        apiKey: localStorage.getItem('ai_api_key') || '',
-                        baseUrl: localStorage.getItem('ai_base_url') || 'https://api.openai.com/v1',
-                        model: localStorage.getItem('ai_model') || 'gpt-4o'
+                <!-- 控制卡：对应当前选中的模式 -->
+                <div class="control-card" v-if="mode">
+                    <div class="control-card__head">
+                        <h3>
+                            <template v-if="mode === 'random'">随机抽题 · 高级选项</template>
+                            <template v-else-if="mode === 'by_topic'">按主题 / 章节出题</template>
+                            <template v-else>自定义出题（语义检索）</template>
+                        </h3>
+                        <button v-if="mode === 'random'" class="btn btn--primary" @click="fetchQuestions('random')" :disabled="questionsLoading">
+                            <span v-if="questionsLoading">加载中…</span>
+                            <span v-else>开始随机练习</span>
+                        </button>
+                        <button v-else-if="mode === 'by_topic'" class="btn btn--primary" @click="fetchQuestions('by_topic')" :disabled="!pickBig || questionsLoading">
+                            <span v-if="questionsLoading">加载中…</span>
+                            <span v-else>开始 {{ truncate(pickBig || '按主题', 10) }} 练习</span>
+                        </button>
+                        <button v-else class="btn btn--primary" @click="fetchQuestions('custom')" :disabled="!customTopic.trim() || questionsLoading">
+                            <span v-if="questionsLoading">检索中…</span>
+                            <span v-else>开始自定义出题</span>
+                        </button>
+                    </div>
+
+                    <!-- random -->
+                    <div v-if="mode === 'random'" class="control-grid control-grid--flat">
+                        <div class="cg-6">
+                            <div class="field">
+                                <label class="label">每次出几道题</label>
+                                <input class="input" type="number" min="1" max="50" step="1" v-model.number="randomCount" />
+                            </div>
+                        </div>
+                        <div class="cg-6" style="display:flex; align-items:center; justify-content:flex-end;">
+                            <label class="answers-toggle">
+                                <span>跳过本轮已做过的 {{ seenIds.size }} 题</span>
+                                <button type="button" role="switch" class="switch" :aria-checked="excludeSeen" @click="excludeSeen = !excludeSeen"></button>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- by_topic（chip 选择：大主题 + 子章节，两列对齐，不再乱） -->
+                    <div v-else-if="mode === 'by_topic'" class="topic-board">
+                        <div v-if="topicLoadError" class="topic-board__err">
+                            主题加载失败：{{ topicLoadError }}
+                            <button class="btn btn--primary" style="margin-left: var(--sp-2);" @click="loadTopics">重试</button>
+                        </div>
+                        <template v-else-if="!topicsReady">
+                            <div class="skel" style="height: 22px; width: 28%; margin-bottom: var(--sp-3);"></div>
+                            <div class="skel" style="height: 168px;"></div>
+                        </template>
+                        <template v-else>
+                            <div class="topic-board__row">
+                                <div class="topic-board__col">
+                                    <div class="topic-board__label">① 选择大主题</div>
+                                    <div class="topic-board__chips" role="tablist" aria-label="大主题">
+                                        <button
+                                            v-for="t in topics"
+                                            :key="t.big_topic"
+                                            class="chip chip--sm"
+                                            type="button"
+                                            role="tab"
+                                            :aria-checked="pickBig === t.big_topic"
+                                            @click="pickBig = pickBig === t.big_topic ? '' : t.big_topic; pickMid = '';">
+                                            {{ truncate(t.big_topic, 24) }}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="topic-board__col">
+                                    <div class="topic-board__label">
+                                        ② 选择子章节
+                                        <span class="topic-board__hint">（可留空，表示整个大主题）</span>
+                                    </div>
+                                    <div v-if="!pickBig" class="topic-board__empty">请先在左侧选择大主题，或直接跳过按大主题整体出题。</div>
+                                    <div v-else-if="!currentBigMidList.length" class="topic-board__empty">该大主题暂无子章节，会按整个大主题随机抽取。</div>
+                                    <div v-else class="topic-board__chips" role="tablist" aria-label="子章节">
+                                        <button
+                                            v-for="m in currentBigMidList"
+                                            :key="m.mid_topic"
+                                            class="chip chip--sm"
+                                            type="button"
+                                            role="tab"
+                                            :aria-checked="pickMid === m.mid_topic"
+                                            @click="pickMid = pickMid === m.mid_topic ? '' : m.mid_topic;">
+                                            {{ truncate(m.mid_topic, 24) }}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="topic-board__col topic-board__col--options">
+                                    <div class="topic-board__label">③ 出题数量（默认打乱顺序）</div>
+                                    <div class="field">
+                                        <label class="label">每次出几道题</label>
+                                        <input class="input" type="number" min="1" max="200" step="1" v-model.number="topicCount" />
+                                    </div>
+                                    <div class="hint" style="margin-top: var(--sp-3); line-height: 1.7;">
+                                        🎲 系统自动打乱顺序，保证每次练习的题目顺序不同、覆盖更均匀。
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- custom（自定义出题） -->
+                    <div v-else-if="mode === 'custom'" class="control-grid control-grid--flat">
+                        <div class="cg-12">
+                            <div class="field">
+                                <label class="label">我想练……（任意中文 / 英文句子，按语义从题库召回最相关的题）</label>
+                                <textarea
+                                    class="textarea"
+                                    rows="3"
+                                    v-model="customTopic"
+                                    @keydown.meta.enter.prevent="fetchQuestions('custom')"
+                                    @keydown.ctrl.enter.prevent="fetchQuestions('custom')"
+                                    placeholder="例如：出道 Spring 事务传播行为的题 &#10;例如：RAG 检索的核心算法与向量数据库索引 &#10;例如：JVM GC 调优常用参数"></textarea>
+                                <div class="hint">提示：Ctrl / ⌘ + Enter 直接提交</div>
+                            </div>
+                        </div>
+                        <div class="cg-3">
+                            <div class="field">
+                                <label class="label">返回多少道题（top-k）</label>
+                                <input class="input" type="number" min="1" max="50" step="1" v-model.number="customCount" />
+                            </div>
+                        </div>
+                        <div class="cg-3">
+                            <div class="field">
+                                <label class="label">最低相似度</label>
+                                <input class="input" type="number" min="0" max="1" step="0.05" v-model.number="customMinSim" />
+                            </div>
+                        </div>
+                        <div class="cg-12">
+                            <div class="field">
+                                <label class="label">推荐语句（点击直接填入）</label>
+                                <div style="display:flex; flex-wrap: wrap; gap: var(--sp-2);">
+                                    <button v-for="ex in semanticExamples" :key="ex" type="button" class="chip" @click="customTopic = ex">{{ ex }}</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 结果区：加载 / 错误 / 空态 -->
+                <div class="card card--soft" v-if="questionsLoading">
+                    <div style="display:grid; gap: var(--sp-5);">
+                        <div class="skel" style="height: 18px; width: 40%;"></div>
+                        <div class="qstack">
+                            <div class="qcard" style="pointer-events:none;">
+                                <div class="skel" style="height: 14px; width: 38%; margin-bottom: var(--sp-3);"></div>
+                                <div class="skel" style="height: 22px; margin-bottom: var(--sp-3);"></div>
+                                <div class="skel" style="height: 16px; width: 72%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-else-if="questionError" class="state">
+                    <div class="state__title" style="margin-top: 0;">题目加载失败</div>
+                    <div class="state__sub" style="white-space: pre-wrap;">{{ questionError }}</div>
+                    <div style="margin-top: var(--sp-5);">
+                        <button class="btn btn--primary" @click="retryLastQuery">重试</button>
+                    </div>
+                </div>
+            </template>
+
+            <!-- ============ Focus：出题后的「单题专注」画面（重心在题上，只有 1 题） ============ -->
+            <template v-else-if="quizStage === 'focus' && currentQuestion()">
+                <!-- 顶部导航条：返回 / 进度 / 换一批 -->
+                <div class="focus-head card card--soft">
+                    <button class="btn" @click="gotoHome">← 返回出题</button>
+                    <div class="focus-head__progress">
+                        <div class="focus-head__label">
+                            <span class="chip chip--ghost" style="pointer-events:none;">
+                                {{ lastQueryMode === 'random' ? '随机抽题' : (lastQueryMode === 'by_topic' ? '按主题' : '自定义出题') }}
+                            </span>
+                            <span>第 {{ currentQIndex + 1 }} / {{ questions.length }} 题</span>
+                        </div>
+                        <div class="progress" role="progressbar" :aria-valuemin="0" :aria-valuemax="questions.length" :aria-valuenow="currentQIndex + 1">
+                            <i :style="{ width: (((currentQIndex + 1) / (questions.length || 1)) * 100) + '%' }"></i>
+                        </div>
+                    </div>
+                    <button class="btn" :disabled="questionsLoading" @click="nextBatch">{{ nextBatchLabel }}</button>
+                </div>
+
+                <!-- 当前题：独占 -->
+                <article v-if="currentQuestion()" class="qcard qcard--focus" :aria-labelledby="'qf-stem'">
+                    <header class="qcard__header">
+                        <!-- 去掉没必要的题号 #ID，只保留「大主题 › 子章节」层级 -->
+                        <div class="breadcrumb">
+                            <span>{{ currentQuestion().big_topic }}</span>
+                            <span class="sep" aria-hidden="true">›</span>
+                            <span>{{ currentQuestion().mid_topic }}</span>
+                        </div>
+                        <div style="display:inline-flex; align-items:center; gap: var(--sp-2);">
+                            <span class="sim" v-if="currentQuestion().similarity != null" :title="'语义相似度 ' + (currentQuestion().similarity * 100).toFixed(1) + '%'">
+                                <span class="sim__bar" aria-hidden="true"><i :style="{ width: Math.max(0, Math.min(100, currentQuestion().similarity * 100)) + '%' }"></i></span>
+                                sim {{ (currentQuestion().similarity * 100).toFixed(0) }}%
+                            </span>
+                        </div>
+                    </header>
+
+                    <h3 id="qf-stem" class="qcard__stem qcard__stem--focus">{{ currentQuestion().question || '(空题干占位)' }}</h3>
+
+                    <template v-if="isRevealed(currentQuestion().id)">
+                        <div v-if="answerLoading[currentQuestion().id]" style="padding: var(--sp-4) 0;">
+                            <div class="skel" style="height: 14px; width: 42%;"></div>
+                            <div class="skel" style="height: 14px; margin-top: 8px;"></div>
+                            <div class="skel" style="height: 14px; width: 88%; margin-top: 8px;"></div>
+                        </div>
+                        <div v-else-if="answerError[currentQuestion().id]" style="color: var(--danger); font-size: var(--fs-sm); padding: var(--sp-3) var(--sp-4); border-radius: var(--r-lg); background: var(--danger-soft);">
+                            答案加载失败：{{ answerError[currentQuestion().id] }}
+                            <button class="btn btn--ghost" style="margin-left: var(--sp-3);" @click="loadAnswer(currentQuestion().id)">重试</button>
+                        </div>
+                        <div v-else-if="answers[currentQuestion().id] != null" class="answer answer--focus" v-html="renderedAnswer(currentQuestion().id)"></div>
+                    </template>
+
+                    <div class="qcard__foot">
+                        <div style="display:inline-flex; gap: var(--sp-3); align-items:center; flex-wrap:wrap;">
+                            <button v-if="!isRevealed(currentQuestion().id)" class="reveal" @click="loadAnswer(currentQuestion().id)" :disabled="answerLoading[currentQuestion().id]">
+                                显示参考答案
+                            </button>
+                            <template v-else>
+                                <span style="font-size: var(--fs-xs); color: var(--text-3);">答案已展开</span>
+                                <button class="btn btn--ghost" @click="hideAnswer(currentQuestion().id)">收起</button>
+                            </template>
+                            <!-- 与「显示参考答案」样式完全一致（同样的 .reveal 类），不要更显眼 -->
+                            <a
+                                v-if="currentQuestion().source_url_with_anchor"
+                                class="reveal"
+                                :href="currentQuestion().source_url_with_anchor"
+                                target="_blank" rel="noopener noreferrer">
+                                跳原页面查看上下文
+                            </a>
+                        </div>
+                        <div class="qcard__nav">
+                            <button class="btn" :disabled="currentQIndex === 0" @click="gotoPrevQ">← 上一题</button>
+                            <button class="btn btn--primary" @click="gotoNextQ">
+                                <template v-if="currentQIndex < questions.length - 1">下一题 →</template>
+                                <template v-else>做完这批，换一批</template>
+                            </button>
+                        </div>
+                    </div>
+                </article>
+            </template>
+        </section>
+    </main>
+
+</div>
+
+<script>
+// ---------- Vue app (single root covering both products) ----------
+// Ensure Vue / ElementPlus (loaded from unpkg CDN, non-defer) are available
+// before we try to mount. They are <script> (without defer) above, so in
+// normal page loads they are already defined by the time this inline <script>
+// at the end of <body> runs. We still guard against CDN hiccups inside
+// automation / offline environments with a retry loop + DOMContentLoaded.
+(function bootstrap() {
+    if (typeof Vue === 'undefined' || typeof ElementPlus === 'undefined') {
+        const delay = Math.min(120, 40 + (bootstrap._retries || 0) * 20);
+        bootstrap._retries = (bootstrap._retries || 0) + 1;
+        if (bootstrap._retries > 40) {
+            document.body.insertAdjacentHTML('beforeend',
+                '<div style="position:fixed;inset:auto 16px 16px 16px;padding:14px 16px;border-radius:14px;background:#ffe9ea;color:#b42318;border:1px solid #fecdd3;font:14px/1.5 -apple-system,BlinkMacSystemFont,PingFang SC,sans-serif;z-index:9999;">'
+                + '依赖脚本加载失败（Vue/Element Plus），请检查网络或刷新页面重试。'
+                + '</div>');
+            return;
+        }
+        setTimeout(bootstrap, delay);
+        return;
+    }
+    main();
+})();
+
+function main() {
+    const { createApp, reactive, ref, toRefs, nextTick, computed, onMounted, watch, getCurrentInstance } = Vue;
+    const { ElMessage } = ElementPlus;
+
+    createApp({
+        setup() {
+            /* ---------- shared / shell ---------- */
+            const currentApp = ref('interview');  // 'interview' | 'quiz'
+
+            const serviceStatus = computed(() => {
+                if (!state._healthChecked) return { color: 'warn', text: '检测后端…' };
+                if (state._healthOk)  return { color: '', text: '后端已连接' };
+                return { color: 'err', text: '后端未连接' };
+            });
+
+            const state = reactive({
+                _healthChecked: false,
+                _healthOk: false,
+
+                /* ---------- interview (legacy steps) ---------- */
+                interviewStep: 1,
+                interviewSteps: [
+                    { id: 1, label: '模型设置', hint: '填入你自己的 API Key 和 Base URL。' },
+                    { id: 2, label: '上传简历', hint: 'PDF / 文本 / 或从已缓存简历中挑选，再选岗位。' },
+                    { id: 3, label: '模拟面试', hint: '面试官根据你的简历和 JD 真实追问。' },
+                    { id: 4, label: '结束 / 再来一次', hint: '本轮结束，一键重新开始。' },
+                ],
+                loading: false,
+                positionsLoading: false,
+                positionsError: '',
+                positions: [],
+                targetPosition: '',
+                jdMode: 'preset',
+                customJdName: '',
+                customJdText: '',
+                retryPrompt: '',
+                resumeProjects: '',
+                loadingStatus: '',
+                resumeTab: 'pdf',
+                savedResumes: [],
+                resumeText: '',
+                pdfData: '',
+                resumeParsed: false,
+                resume: {},
+                chatMessages: [],
+                userAnswer: '',
+                streaming: false,
+                interviewerStatus: 'idle',
+                finished: false,
+                evaluation: null,
+                form: reactive({
+                    apiKey: localStorage.getItem('ai_api_key') || '',
+                    baseUrl: localStorage.getItem('ai_base_url') || 'https://api.openai.com/v1',
+                    model: localStorage.getItem('ai_model') || 'gpt-4o',
+                }),
+
+                /* ---------- quiz ---------- */
+                quizStatsLoaded: false,
+                quizStats: reactive({ total_questions: 0, big_topics: 0, mid_topics: 0, pages: 0 }),
+                lastIngestAt: '',
+
+                topicsReady: false,
+                topicLoadError: '',
+                topics: [],
+                // NOTE: topicFilter, segIndicatorStyle are declared as standalone refs
+                // below (NOT inside reactive state) so the template sees them as plain refs.
+
+                mode: 'random',
+
+                randomCount: 5,
+                excludeSeen: true,
+                seenIds: reactive(new Set()),
+
+                pickBig: '',
+                pickMid: '',
+                topicCount: 10,
+                topicShuffle: true,  // 默认打乱；用户：取消 UI 开关，默认打乱顺序
+
+                customTopic: '',
+                customCount: 8,
+                customMinSim: 0.3,
+                semanticExamples: [
+                    '出道 Spring 事务传播行为的题',
+                    'JVM GC 调优和常用参数',
+                    'RAG 检索的核心算法与向量数据库索引',
+                    '向量数据库和传统数据库的核心区别',
+                    'MySQL MVCC 是怎么实现的？',
+                    '分布式 ID 生成方案有哪些？',
+                    'Redis 持久化 RDB vs AOF 怎么选？',
+                    '设计短链系统的要点',
+                    'Agent 项目常见的 badcase 如何复盘？',
+                    '微服务链路追踪与可观测性',
+                ],
+
+                questions: reactive([]),
+                questionsLoading: false,
+                questionError: '',
+                lastQueryMode: null,
+                answeredCount: 0,
+                answeredPct: 0,
+                expandAll: false,
+
+                // 单题专注模式：出题后只显示当前这道，上一题/下一题切换
+                focusMode: true,              // 出题后进入「专注」：题目独占画面
+                quizStage: 'home',            // 'home' | 'focus'
+                currentQIndex: 0,             // 当前题在 questions 中的下标
+
+                answers: reactive({}),         // id -> md string
+                answerLoading: reactive({}),   // id -> true
+                answerError: reactive({}),     // id -> msg
+                revealed: reactive({}),        // id -> true（用对象避免 Vue 3 Set/Map 在某些浏览器端代理不触发 render 的坑；仍保持 set-like 语义）
+                revealedKeys: 0,               // size 辅助，用 plain number 保证触发 computed/template 更新
+            });
+
+            /* ---------- standalone refs (must NOT be nested inside reactive() state) ----------
+             * Putting a ref() inside a reactive() unwraps it silently, which breaks the
+             * contract that the template expects a "plain ref" when toRefs(state) spreads it.
+             * Keep these as module-level refs and expose them explicitly in `return`.
+             */
+            const topicFilter = ref('');
+            const segIndicatorStyle = ref({ width: '1px', transform: 'translateX(0)' });
+            const segRef = ref(null);
+            // Topic-tree highlight mirrors the current by_topic selection so the sidebar
+            // and picker dropdown stay visually in sync.
+            const activeBig = ref('');
+            const activeMid = ref('');
+
+            /* ---------- interview helpers (keep old API contracts) ---------- */
+            function saveConfig() {
+                localStorage.setItem('ai_api_key', state.form.apiKey);
+                localStorage.setItem('ai_base_url', state.form.baseUrl);
+                localStorage.setItem('ai_model', state.form.model);
+            }
+            async function testConnection() {
+                saveConfig();
+                state.loading = true;
+                try {
+                    const res = await fetch('/api/health');
+                    if (res.ok) ElMessage.success('连接正常');
+                    else ElMessage.error('连接失败');
+                } catch (e) { ElMessage.error('连接失败：' + e.message); }
+                finally { state.loading = false; }
+            }
+            async function loadPositions() {
+                state.positionsLoading = true;
+                state.positionsError = '';
+                try {
+                    const res = await fetch('/api/positions');
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    const data = await res.json();
+                    state.positions = Array.isArray(data) ? data : (Array.isArray(data.positions) ? data.positions : []);
+                    if (!state.positions.length) {
+                        state.positionsError = '后端返回空岗位列表';
+                        ElMessage.warning(state.positionsError);
+                    } else {
+                        nextTick(() => {
+                            const firstId = state.positions[0].id || state.positions[0].name || '';
+                            const stillValid = state.targetPosition && state.positions.some(p => (p.id || p.name) === state.targetPosition);
+                            if (!stillValid) state.targetPosition = firstId;
+                        });
                     }
+                } catch (e) {
+                    state.positionsError = '加载岗位列表失败：' + (e.message || String(e));
+                    state.positions = [];
+                    ElMessage.error(state.positionsError);
+                } finally { state.positionsLoading = false; }
+            }
+            async function retryLoadPositions() { await loadPositions(); }
+            function currentPositionName() {
+                if (!state.targetPosition) return '';
+                const f = state.positions.find(p => p.id === state.targetPosition || p.name === state.targetPosition);
+                return f ? f.name : state.targetPosition;
+            }
+            function currentPositionMeta() {
+                if (!state.targetPosition || !state.positions.length) return null;
+                const f = state.positions.find(p => p.id === state.targetPosition || p.name === state.targetPosition);
+                if (!f) return null;
+                const maxQ = f.suggested_max_questions || (f.id === 'ai_fullstack_engineer' || f.id === 'agent_dev_engineer' ? 18 : 14);
+                return { req: f.requirements_count || 0, bonus: f.bonus_count || 0, maxQ, location: f.location || '深圳' };
+            }
+            async function loadSavedResumes() {
+                try {
+                    const res = await fetch('/api/resumes');
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    state.savedResumes = Array.isArray(data.resumes) ? data.resumes : [];
+                } catch (e) { console.warn('加载已保存简历失败', e); }
+            }
+            async function selectSavedResume(hash) {
+                state.loading = true;
+                try {
+                    const res = await fetch('/api/resumes/' + hash);
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || '读取简历失败');
+                    }
+                    const d = await res.json();
+                    state.resume = d;
+                    state.resumeProjects = d.llm_projects || '';
+                    state.resumeParsed = true;
+                    state.pdfData = '';
+                    state.resumeText = '';
+                    ElMessage.success('已选用缓存简历：' + (d.name || '未命名') + '，可直接选择岗位开始面试');
+                } catch (e) {
+                    ElMessage.error('读取简历失败：' + e.message);
+                } finally { state.loading = false; }
+            }
+            function handlePdfUpload(file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    state.pdfData = e.target.result.split(',')[1];
+                    state.resumeText = '';
+                    ElMessage.success('PDF 已读取，自动开始解析简历…');
+                    nextTick(() => { parseResume(); });
                 };
-            },
-            async mounted() {
-                await this.loadPositions();
-            },
-            methods: {
-                async loadPositions() {
-                    this.positionsLoading = true;
-                    this.positionsError = '';
-                    try {
-                        const res = await fetch('/api/positions');
-                        if (!res.ok) {
-                            throw new Error('HTTP ' + res.status);
-                        }
-                        const data = await res.json();
-                        this.positions = Array.isArray(data) ? data : (Array.isArray(data.positions) ? data.positions : []);
-                        if (!this.positions.length) {
-                            const msg = '后端返回空岗位列表';
-                            this.positionsError = msg;
-                            ElMessage.warning(msg);
-                        } else {
-                            // el-select 在异步 options 加载后容易显示空值，这里用 nextTick 强制同步，
-                            // 先清空再赋第一个值，确保已选值显示出来
-                            this.$nextTick(() => {
-                                const firstId = this.positions[0].id || this.positions[0].name || '';
-                                // 如果当前 targetPosition 没在 positions 里（或为空）就重置第一个
-                                const stillValid = this.targetPosition && this.positions.some(p => (p.id || p.name) === this.targetPosition);
-                                if (!stillValid) {
-                                    this.targetPosition = firstId;
-                                }
-                            });
-                        }
-                    } catch (e) {
-                        const msg = '加载岗位列表失败：' + (e.message || String(e));
-                        this.positionsError = msg;
-                        this.positions = [];
-                        ElMessage.error(msg);
-                    } finally {
-                        this.positionsLoading = false;
+                reader.readAsDataURL(file.raw);
+            }
+            async function parseResume() {
+                if (state.loading) return;
+                saveConfig();
+                if (!state.resumeText.trim() && !state.pdfData) { ElMessage.warning('请先输入简历内容或上传 PDF 文件'); return; }
+                state.loading = true;
+                try {
+                    let res, data;
+                    if (state.pdfData) {
+                        res = await fetch('/api/parse-pdf', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ pdf_data: state.pdfData }),
+                        });
+                    } else {
+                        res = await fetch('/api/parse-resume', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: state.resumeText }),
+                        });
                     }
-                },
-                async retryLoadPositions() {
-                    await this.loadPositions();
-                },
-                currentPositionName() {
-                    if (!this.targetPosition) return '';
-                    const found = this.positions.find(p => p.id === this.targetPosition || p.name === this.targetPosition);
-                    return found ? found.name : this.targetPosition;
-                },
-                currentPositionMeta() {
-                    if (!this.targetPosition || !this.positions.length) return null;
-                    const found = this.positions.find(p => p.id === this.targetPosition || p.name === this.targetPosition);
-                    if (!found) return null;
-                    const maxQ = found.suggested_max_questions || (found.id === 'ai_fullstack_engineer' || found.id === 'agent_dev_engineer' ? 18 : 14);
-                    return {
-                        req: found.requirements_count || 0,
-                        bonus: found.bonus_count || 0,
-                        maxQ,
-                        location: found.location || '深圳',
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || `请求失败: ${res.status}`);
+                    }
+                    data = await res.json();
+                    state.resume = data;
+                    state.resumeProjects = data.llm_projects || '';
+                    state.resumeParsed = true;
+                    ElMessage.success('简历解析成功');
+                    loadSavedResumes();
+                } catch (e) {
+                    ElMessage.error('解析失败：' + e.message);
+                } finally { state.loading = false; }
+            }
+            async function startInterview() {
+                saveConfig();
+                if (state.jdMode === 'preset' && state.positions.length && !state.targetPosition) {
+                    ElMessage.warning('请先选择应聘岗位'); return;
+                }
+                if (state.jdMode === 'custom' && (!state.customJdName.trim() || !state.customJdText.trim())) {
+                    ElMessage.warning('请填写自定义岗位名称和 JD 内容'); return;
+                }
+                state.loading = true;
+                state.loadingStatus = '正在根据 JD 规划提问优先级...';
+                try {
+                    const reqBody = {
+                        api_key: state.form.apiKey,
+                        base_url: state.form.baseUrl,
+                        model: state.form.model,
+                        resume_text: state.resume.raw_text || state.resumeText,
+                        resume_projects: state.resumeProjects || undefined,
+                        candidate_name: state.resume.name,
+                        skills: state.resume.skills,
+                        session_id: 'session_1',
                     };
-                },
-                saveConfig() {
-                    localStorage.setItem('ai_api_key', this.form.apiKey);
-                    localStorage.setItem('ai_base_url', this.form.baseUrl);
-                    localStorage.setItem('ai_model', this.form.model);
-                },
-                async testConnection() {
-                    this.saveConfig();
-                    this.loading = true;
-                    try {
-                        const res = await fetch('/api/health');
-                        if (res.ok) {
-                            ElMessage.success('连接正常');
-                        } else {
-                            ElMessage.error('连接失败');
-                        }
-                    } catch (e) {
-                        ElMessage.error('连接失败：' + e.message);
+                    if (state.jdMode === 'custom') {
+                        reqBody.custom_jd_name = state.customJdName;
+                        reqBody.custom_jd_text = state.customJdText;
+                    } else {
+                        reqBody.target_position = state.targetPosition || undefined;
                     }
-                    this.loading = false;
-                },
-                handlePdfUpload(file) {
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
-                        const dataUrl = e.target.result;
-                        this.pdfData = dataUrl.split(',')[1];
-                        this.resumeText = '';
-                        ElMessage.success('PDF 已读取，自动开始解析简历…');
-                        // PDF 上传完成后自动触发解析，不用用户再手动点一次按钮
-                        // 按钮保留在下方仅用于"解析失败后手动重试"场景
-                        this.$nextTick(() => { this.parseResume(); });
-                    };
-                    reader.readAsDataURL(file.raw);
-                },
-                async parseResume() {
-                    if (this.loading) {
-                        // 防重复触发（PDF 上传后自动调用时若用户正好又点了按钮就跳过）
-                        return;
+                    const res = await fetch('/api/start-interview', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(reqBody),
+                    });
+                    const data = await res.json();
+                    if (data.status === 'ready') {
+                        state.interviewStep = 3;
+                        state.chatMessages = [];
+                        state.userAnswer = '';
+                        state.finished = false;
+                        state.evaluation = null;
+                        state.loadingStatus = '正在生成面试问题...';
+                        state.interviewerStatus = 'typing';
+                        await getFirstQuestion();
+                    } else if (!res.ok) {
+                        ElMessage.error(data.detail || '开始面试失败');
+                        state.interviewStep = 2;
+                        state.interviewerStatus = 'idle';
+                    } else {
+                        ElMessage.error(data.detail || '开始面试失败');
                     }
-                    this.saveConfig();
-                    if (!this.resumeText.trim() && !this.pdfData) {
-                        ElMessage.warning('请先输入简历内容或上传 PDF 文件');
-                        return;
-                    }
-                    this.loading = true;
-                    try {
-                        let res, data;
-                        if (this.pdfData) {
-                            res = await fetch('/api/parse-pdf', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ pdf_data: this.pdfData })
-                            });
-                        } else {
-                            res = await fetch('/api/parse-resume', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ text: this.resumeText })
-                            });
-                        }
-                        if (!res.ok) {
-                            const errorData = await res.json().catch(() => ({}));
-                            throw new Error(errorData.detail || `请求失败: ${res.status}`);
-                        }
-                        data = await res.json();
-                        this.resume = data;
-                        this.resumeParsed = true;
-                        ElMessage.success('简历解析成功');
-                    } catch (e) {
-                        ElMessage.error('解析失败：' + e.message);
-                    } finally {
-                        this.loading = false;
-                    }
-                },
-                async startInterview() {
-                    this.saveConfig();
-                    if (this.positions.length && !this.targetPosition) {
-                        ElMessage.warning('请先选择应聘岗位');
-                        return;
-                    }
-                    this.loading = true;
-                    try {
-                        const res = await fetch('/api/start-interview', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                api_key: this.form.apiKey,
-                                base_url: this.form.baseUrl,
-                                model: this.form.model,
-                                resume_text: this.resume.raw_text || this.resumeText,
-                                resume_summary: this.resume.summary,
-                                candidate_name: this.resume.name,
-                                skills: this.resume.skills,
-                                session_id: 'session_1',
-                                target_position: this.targetPosition || undefined,
-                            })
-                        });
-                        const data = await res.json();
-                        if (data.status === 'ready') {
-                            this.step = 3;
-                            this.chatMessages = [];
-                            this.userAnswer = '';
-                            this.finished = false;
-                            this.evaluation = null;
-
-                            // ① 先显示「📖 面试官正在读简历」= 后台跑 prioritize_by_jd 排计划
-                            this.interviewerStatus = 'reading_resume';
-
-                            // ② 轮询 /api/plan-status，每 300ms 问一次后台读完没（最多等 60s）
-                            let waitedMs = 0;
-                            let planReady = false;
-                            const POLL_MS = 300;
-                            while (waitedMs < 60000) {
-                                const r = await fetch('/api/plan-status?session_id=session_1');
-                                if (r.ok) {
-                                    const ps = await r.json();
-                                    if (ps.error) {
-                                        // 后台线程真实错误（API Key 错 / LLM 连不上 / JSON 解析失败）
-                                        ElMessage.error(ps.error);
-                                        // 退回到 step 2，方便用户改配置后重试
-                                        this.step = 2;
-                                        this.interviewerStatus = 'idle';
-                                        this.loading = false;
-                                        return;
-                                    }
-                                    if (ps.ready) {
-                                        planReady = true;
-                                        break;
-                                    }
-                                }
-                                await new Promise(resolve => setTimeout(resolve, POLL_MS));
-                                waitedMs += POLL_MS;
-                            }
-                            if (!planReady) {
-                                ElMessage.error('面试官准备超时，请检查 API/模型配置后重试');
-                                this.step = 2;
-                                this.interviewerStatus = 'idle';
-                                this.loading = false;
-                                return;
-                            }
-                            // ③ 计划排好 → 切到「面试官正在输入」开始出第一题
-                            this.interviewerStatus = 'typing';
-                            await this.getFirstQuestion();
-                        } else if (!res.ok) {
-                            ElMessage.error(data.detail || '开始面试失败');
-                            this.step = 2;
-                            this.interviewerStatus = 'idle';
-                        } else {
-                            ElMessage.error(data.detail || '开始面试失败');
-                        }
-                    } catch (e) {
-                        ElMessage.error('开始面试失败：' + e.message);
-                        this.interviewerStatus = 'idle';
-                    }
-                    this.loading = false;
-                },
-                async getFirstQuestion() {
-                    this.streaming = true;
-                    // 如果前面 startInterview 已经把 interviewerStatus 切到 typing 了就保留；兜底设置一次
-                    if (this.interviewerStatus !== 'reading_resume') {
-                        this.interviewerStatus = 'typing';
-                    }
-                    try {
-                        const res = await fetch('/api/first-question', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ session_id: 'session_1' })
-                        });
-                        if (!res.ok) {
-                            const err = await res.json().catch(() => ({}));
-                            throw new Error(err.detail || `请求失败: ${res.status}`);
-                        }
-                        const data = await res.json();
-                        this.chatMessages.push({ role: 'interviewer', content: data.response });
-                        this.$nextTick(() => this.scrollToBottom());
-                    } catch (e) {
-                        ElMessage.error('获取问题失败：' + e.message);
-                    } finally {
-                        this.streaming = false;
-                        this.interviewerStatus = 'idle';
-                    }
-                },
-                async sendAnswer() {
-                    if (!this.userAnswer.trim()) return;
-                    this.chatMessages.push({ role: 'candidate', content: this.userAnswer });
-                    const answer = this.userAnswer;
-                    this.userAnswer = '';
-                    this.streaming = true;
-                    this.interviewerStatus = 'typing';
-                    this.$nextTick(() => this.scrollToBottom());
-
-                    try {
-                        const res = await fetch('/api/chat', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ session_id: 'session_1', answer: answer })
-                        });
-                        if (!res.ok) {
-                            const err = await res.json().catch(() => ({}));
-                            throw new Error(err.detail || `请求失败: ${res.status}`);
-                        }
-                        const data = await res.json();
-                        this.chatMessages.push({ role: 'interviewer', content: data.response });
-                        this.finished = data.finished;
-                        if (this.finished) {
-                            this.finishInterview();
-                        }
-                    } catch (e) {
-                        ElMessage.error('发送失败：' + e.message);
-                    } finally {
-                        this.streaming = false;
-                        this.interviewerStatus = 'idle';
-                    }
-                    this.$nextTick(() => this.scrollToBottom());
-                },
-                async finishInterview() {
-                    this.finished = true;
-                    this.interviewerStatus = 'idle';
-                    this.step = 4;
-                    try {
-                        const res = await fetch('/api/evaluation?session_id=session_1');
-                        const data = await res.json();
-                        this.evaluation = data;
-                    } catch (e) {
-                        ElMessage.error('获取评估失败：' + e.message);
-                    }
-                },
-                scrollToBottom() {
-                    const container = this.$refs.chatContainer;
-                    if (container) {
-                        container.scrollTop = container.scrollHeight;
-                    }
-                },
-                reset() {
-                    this.step = 1;
-                    this.resumeText = '';
-                    this.pdfData = '';
-                    this.resumeParsed = false;
-                    this.resume = {};
-                    this.chatMessages = [];
-                    this.userAnswer = '';
-                    this.finished = false;
-                    this.evaluation = null;
-                    this.streaming = false;
-                    this.interviewerStatus = 'idle';
+                } catch (e) {
+                    ElMessage.error('开始面试失败：' + e.message);
+                    state.interviewerStatus = 'idle';
+                } finally {
+                    state.loading = false;
+                    state.loadingStatus = '';
                 }
             }
-        }).use(ElementPlus).mount('#app');
-    </script>
+            async function getFirstQuestion() {
+                state.streaming = true;
+                state.interviewerStatus = 'typing';
+                try {
+                    const res = await fetch('/api/first-question', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ session_id: 'session_1' }),
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || `请求失败: ${res.status}`);
+                    }
+                    const data = await res.json();
+                    state.chatMessages.push({ role: 'interviewer', content: data.response, _time: _nowClock() });
+                    nextTick(scrollToBottom);
+                } catch (e) {
+                    ElMessage.error('获取问题失败：' + e.message);
+                } finally {
+                    state.streaming = false;
+                    state.interviewerStatus = 'idle';
+                }
+            }
+            function _nowClock() {
+                try {
+                    const d = new Date();
+                    const h = String(d.getHours()).padStart(2, '0');
+                    const m = String(d.getMinutes()).padStart(2, '0');
+                    return `${h}:${m}`;
+                } catch (_) { return ''; }
+            }
+            async function sendAnswer() {
+                if (!state.userAnswer.trim()) return;
+                state.chatMessages.push({ role: 'candidate', content: state.userAnswer, _time: _nowClock() });
+                const answer = state.userAnswer;
+                state.userAnswer = '';
+                state.streaming = true;
+                state.interviewerStatus = 'typing';
+                nextTick(scrollToBottom);
+                try {
+                    const res = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ session_id: 'session_1', answer: answer }),
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || `请求失败: ${res.status}`);
+                    }
+                    const d = await res.json();
+                    state.chatMessages.push({ role: 'interviewer', content: d.response, _time: _nowClock() });
+                    state.finished = !!d.finished;
+                    if (state.finished) finishInterview();
+                } catch (e) { ElMessage.error('发送失败：' + e.message); }
+                finally {
+                    state.streaming = false;
+                    state.interviewerStatus = 'idle';
+                }
+                nextTick(scrollToBottom);
+            }
+            const chatContainer = ref(null);
+            function scrollToBottom() {
+                // legacy container may not exist on quiz tab; keep harmless
+                const el = chatContainer && chatContainer.value;
+                if (el) el.scrollTop = el.scrollHeight;
+            }
+            async function finishInterview() {
+                state.finished = true;
+                state.interviewerStatus = 'idle';
+                state.interviewStep = 4;
+                // 取消综合评价（用户明确：Step 4 只要再来一次，不要综合评价）
+                // 保留 evaluation 字段为 null 即可，UI 端不再渲染评分/评价。
+                state.evaluation = null;
+            }
+            async function restartInterview() {
+                saveConfig();
+                if (!state.resume.raw_text && !state.resumeText) {
+                    ElMessage.warning('简历数据已丢失，请重新上传');
+                    resetInterviewFlow();
+                    return;
+                }
+                state.loading = true;
+                state.loadingStatus = '正在根据 JD 规划提问优先级...';
+                try {
+                    const reqBody = {
+                        api_key: state.form.apiKey,
+                        base_url: state.form.baseUrl,
+                        model: state.form.model,
+                        resume_text: state.resume.raw_text || state.resumeText,
+                        resume_projects: state.resumeProjects || undefined,
+                        candidate_name: state.resume.name,
+                        skills: state.resume.skills,
+                        session_id: 'session_1',
+                        custom_prompt: state.retryPrompt || undefined,
+                    };
+                    if (state.jdMode === 'custom' && state.customJdName && state.customJdText) {
+                        reqBody.custom_jd_name = state.customJdName;
+                        reqBody.custom_jd_text = state.customJdText;
+                    } else if (state.targetPosition) {
+                        reqBody.target_position = state.targetPosition;
+                    }
+                    const res = await fetch('/api/start-interview', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(reqBody),
+                    });
+                    const data = await res.json();
+                    if (data.status === 'ready') {
+                        state.interviewStep = 3;
+                        state.chatMessages = [];
+                        state.userAnswer = '';
+                        state.finished = false;
+                        state.evaluation = null;
+                        state.loadingStatus = '正在生成面试问题...';
+                        state.interviewerStatus = 'typing';
+                        await getFirstQuestion();
+                    } else if (!res.ok) {
+                        ElMessage.error(data.detail || '再来一次失败');
+                    }
+                } catch (e) {
+                    ElMessage.error('再来一次失败：' + e.message);
+                    state.interviewerStatus = 'idle';
+                } finally {
+                    state.loading = false;
+                    state.loadingStatus = '';
+                }
+            }
+            function resetInterviewFlow() {
+                state.interviewStep = 1;
+                state.resumeText = '';
+                state.pdfData = '';
+                state.resumeParsed = false;
+                state.resume = {};
+                state.chatMessages = [];
+                state.userAnswer = '';
+                state.finished = false;
+                state.evaluation = null;
+                state.streaming = false;
+                state.interviewerStatus = 'idle';
+            }
+
+            /* Step 4「回到投递简历」：保留 API 配置，直接跳 Step 2 上传简历，不再走填 API 的 Step 1 */
+            function gotoResumeUpload() {
+                state.interviewStep = 2;
+                state.resumeText = '';
+                state.pdfData = '';
+                state.resumeParsed = false;
+                state.resume = {};
+                state.chatMessages = [];
+                state.userAnswer = '';
+                state.finished = false;
+                state.evaluation = null;
+                state.streaming = false;
+                state.interviewerStatus = 'idle';
+            }
+
+            /* ---------- quiz helpers ---------- */
+            async function checkHealth() {
+                try {
+                    const res = await fetch('/api/health');
+                    state._healthOk = res.ok;
+                } catch (_) { state._healthOk = false; }
+                finally { state._healthChecked = true; }
+            }
+            async function loadQuizStats(refresh) {
+                try {
+                    const res = await fetch('/api/quiz/stats?_=' + (refresh ? Date.now() : 0));
+                    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || ('HTTP ' + res.status));
+                    const d = await res.json();
+                    state.quizStats.total_questions = Number(d.total_questions) || 0;
+                    state.quizStats.big_topics = Number(d.big_topics) || 0;
+                    state.quizStats.mid_topics = Number(d.mid_topics) || 0;
+                    state.quizStats.pages = Number(d.pages) || 0;
+                    state.quizStatsLoaded = true;
+                } catch (e) {
+                    state.quizStatsLoaded = true;
+                    Object.assign(state.quizStats, { total_questions: 0, big_topics: 0, mid_topics: 0, pages: 0 });
+                    console.warn('quiz stats failed:', e);
+                }
+            }
+            async function loadTopics() {
+                state.topicsReady = false;
+                state.topicLoadError = '';
+                try {
+                    const res = await fetch('/api/quiz/topics');
+                    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || ('HTTP ' + res.status));
+                    const d = await res.json();
+                    state.topics = Array.isArray(d.topics) ? d.topics : [];
+                    state.topicsReady = true;
+                } catch (e) {
+                    state.topicLoadError = (e && e.message) ? e.message : String(e);
+                    state.topics = [];
+                    state.topicsReady = true;
+                }
+            }
+
+            const filteredTopics = computed(() => {
+                const q = topicFilter && topicFilter.value && topicFilter.value.trim();
+                if (!q) return state.topics;
+                const lower = q.toLowerCase();
+                return state.topics
+                    .map(t => {
+                        const matchesBig = t.big_topic.toLowerCase().includes(lower);
+                        const mids = (t.mid_topics || []).filter(m => matchesBig || m.mid_topic.toLowerCase().includes(lower));
+                        if (!matchesBig && mids.length === 0) return null;
+                        const midSum = mids.reduce((a, b) => a + (Number(b.count) || 0), 0);
+                        return {
+                            big_topic: t.big_topic,
+                            count: matchesBig ? (Number(t.count) || 0) : midSum,
+                            mid_topics: matchesBig ? (t.mid_topics || []) : mids,
+                        };
+                    })
+                    .filter(Boolean);
+            });
+
+            const currentBigMidList = computed(() => {
+                const found = state.topics.find(t => t.big_topic === state.pickBig);
+                return found ? (found.mid_topics || []) : [];
+            });
+
+            // Hero 顶部「随机主题」chip 行：按题数最多挑 6 个，且每次刷新不抖动
+            const quickTopics = computed(() => {
+                const all = Array.isArray(state.topics) ? state.topics.slice() : [];
+                if (!all.length) return [];
+                const topSorted = all.slice().sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
+                return topSorted.slice(0, 6);
+            });
+
+            function truncate(s, n) {
+                if (!s) return '';
+                s = String(s);
+                return s.length <= n ? s : (s.slice(0, n - 1) + '…');
+            }
+            function shortHost(url) {
+                try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return url || ''; }
+            }
+            function orderPrefix(i) { return i + 1; }
+
+            function setMode(m) {
+                state.mode = m;
+                // clear per-mode error so user sees empty baseline
+                if (!state.questions.length) state.questionError = '';
+                nextTick(updateSegIndicator);
+            }
+
+            function updateSegIndicator() {
+                const box = segRef && segRef.value ? segRef.value : null;
+                if (!box) return;
+                const buttons = box.querySelectorAll('button');
+                if (!buttons.length) return;
+                const idx = ['random', 'by_topic', 'custom'].indexOf(state.mode);
+                const b = buttons[idx] || buttons[0];
+                const bRect = b.getBoundingClientRect();
+                const pRect = box.getBoundingClientRect();
+                segIndicatorStyle.value = {
+                    width: bRect.width + 'px',
+                    transform: `translateX(${bRect.left - pRect.left - 3}px)`,
+                };
+            }
+
+            function pickTopic(big, mid) {
+                state.mode = 'by_topic';
+                state.pickBig = big;
+                state.pickMid = mid || '';
+                activeBig.value = big || '';
+                activeMid.value = mid || '';
+                nextTick(() => {
+                    updateSegIndicator();
+                    fetchQuestions('by_topic');
+                });
+            }
+
+            function onQuizSidebarSearchEnter() {
+                const q = (topicFilter.value || '').trim();
+                if (!q) return;
+                // If there is exactly one matching big topic, switch straight into it.
+                const matches = filteredTopics.value;
+                if (matches.length === 1 && (matches[0].mid_topics || []).length === 1) {
+                    pickTopic(matches[0].big_topic, matches[0].mid_topics[0].mid_topic);
+                } else if (matches.length === 1) {
+                    pickTopic(matches[0].big_topic, '');
+                } else {
+                    // Otherwise run a semantic search for the sentence.
+                    state.mode = 'custom';
+                    state.customTopic = q;
+                    nextTick(() => {
+                        updateSegIndicator();
+                        fetchQuestions('custom');
+                    });
+                }
+            }
+
+            function onQuizTabFocused() {
+                updateSegIndicator();
+            }
+
+            watch(() => state.currentApp, (v) => {
+                if (v === 'quiz') nextTick(updateSegIndicator);
+            });
+
+            let _lastFetchPayload = null;
+            async function fetchQuestions(forceMode) {
+                const mode = forceMode || state.mode;
+                state.questionsLoading = true;
+                state.questionError = '';
+                state.lastQueryMode = mode;
+
+                let body = {};
+                if (mode === 'random') {
+                    body = {
+                        mode: 'random',
+                        count: Number(state.randomCount) || 1,
+                        exclude_ids: state.excludeSeen ? Array.from(state.seenIds) : undefined,
+                    };
+                } else if (mode === 'by_topic') {
+                    if (!state.pickBig) {
+                        state.questionsLoading = false;
+                        ElMessage.warning('请先在左侧或下拉里选择大主题');
+                        return;
+                    }
+                    body = {
+                        mode: 'by_topic',
+                        big_topic: state.pickBig,
+                        mid_topic: state.pickMid || undefined,
+                        count: state.topicCount ? Number(state.topicCount) : undefined,
+                        shuffle: !!state.topicShuffle,
+                    };
+                } else {
+                    if (!state.customTopic || !state.customTopic.trim()) {
+                        state.questionsLoading = false;
+                        ElMessage.warning('请输入要练习的方向，例如：出道 Spring 事务传播行为的题');
+                        return;
+                    }
+                    body = {
+                        mode: 'custom',
+                        custom_topic: state.customTopic.trim(),
+                        count: Number(state.customCount) || 8,
+                        min_similarity: isNaN(Number(state.customMinSim)) ? undefined : Number(state.customMinSim),
+                    };
+                }
+                _lastFetchPayload = body;
+
+                try {
+                    const res = await fetch('/api/quiz/question', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || ('HTTP ' + res.status));
+                    }
+                    const data = await res.json();
+                    const qs = Array.isArray(data.questions) ? data.questions : [];
+                    // Replace reactive array
+                    state.questions.length = 0;
+                    qs.forEach(q => state.questions.push(q));
+                    // reset answer cache for this batch
+                    Object.keys(state.answers).forEach(k => delete state.answers[k]);
+                    Object.keys(state.answerLoading).forEach(k => delete state.answerLoading[k]);
+                    Object.keys(state.answerError).forEach(k => delete state.answerError[k]);
+                    // revealed 改对象实现
+                    Object.keys(state.revealed).forEach(k => delete state.revealed[k]);
+                    state.revealedKeys = 0;
+                    state.answeredCount = 0;
+                    state.answeredPct = 0;
+                    state.expandAll = false;
+                    // 单题专注：回到第 0 题，并切到「专注」画面（重心在题上）
+                    state.currentQIndex = 0;
+                    if (qs.length && state.focusMode) {
+                        state.quizStage = 'focus';
+                    }
+                    qs.forEach(q => state.seenIds.add(Number(q.id)));
+                    if (!qs.length) {
+                        ElMessage.error('没有匹配的题目，试着降低阈值或换个句子');
+                    } else if (mode === 'custom') {
+                        ElMessage.success(`自定义出题完成：${qs.length} 道，点击「显示参考答案」可查看答案`);
+                    } else {
+                        ElMessage(`已加载 ${qs.length} 道题`);
+                    }
+                } catch (e) {
+                    state.questionError = (e && e.message) ? e.message : String(e);
+                    state.questions.length = 0;
+                    ElMessage.error('出题失败');
+                } finally {
+                    state.questionsLoading = false;
+                    nextTick(updateSegIndicator);
+                }
+            }
+
+            function retryLastQuery() {
+                if (!state.lastQueryMode) return;
+                fetchQuestions(state.lastQueryMode);
+            }
+
+            function gotoHome() { state.quizStage = 'home'; }
+            function gotoPrevQ() {
+                if (state.currentQIndex > 0) {
+                    state.currentQIndex--;
+                    nextTick(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+                }
+            }
+            function gotoNextQ() {
+                if (state.currentQIndex < state.questions.length - 1) {
+                    state.currentQIndex++;
+                    nextTick(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+                } else {
+                    // 最后一题 → 换一批（保持原模式）
+                    nextBatch();
+                }
+            }
+            function pickRandomBigTopic() {
+                const pool = (state.topics && state.topics.length) ? state.topics : [];
+                if (!pool.length) {
+                    ElMessage.warning('主题数据尚未加载，稍等再试');
+                    return;
+                }
+                const pick = pool[Math.floor(Math.random() * pool.length)];
+                state.mode = 'by_topic';
+                state.pickBig = pick.big_topic;
+                state.pickMid = '';
+                nextTick(() => {
+                    updateSegIndicator();
+                    fetchQuestions('by_topic');
+                });
+            }
+            function startRandomNow() {
+                state.mode = 'random';
+                nextTick(() => { updateSegIndicator(); fetchQuestions('random'); });
+            }
+            // 暴露：点击 mode-tile 的「随机抽题」时，如果还没出题，直接一键出一批
+            // （保留原有 setMode 行为；另外提供随机模式「主页即抽题」的交互）
+            function onRandomTileClick() {
+                state.mode = 'random';
+                nextTick(() => {
+                    updateSegIndicator();
+                    if (!state.questions.length) fetchQuestions('random');
+                    else state.quizStage = state.questions.length ? 'focus' : 'home';
+                });
+            }
+            function currentQuestion() {
+                if (!state.questions.length) return null;
+                const i = Math.max(0, Math.min(state.currentQIndex, state.questions.length - 1));
+                return state.questions[i] || null;
+            }
+
+            function nextBatch() {
+                fetchQuestions(state.lastQueryMode || state.mode);
+            }
+            const nextBatchLabel = computed(() => {
+                if (state.questionsLoading) return '加载中…';
+                if (state.lastQueryMode === 'random') return '🎲 再抽一批随机题';
+                if (state.lastQueryMode === 'by_topic') return '🗂️ 同一主题换一批';
+                if (state.lastQueryMode === 'custom') return '🧠 用同一句子重新检索';
+                return '换一批';
+            });
+
+            function isRevealed(id) { return !!state.revealed[Number(id)]; }
+            /** 真正的「后端取答案」动作（可重复调用：已加载则直接返回；并发下不会重复请求）。 */
+            async function _fetchAnswerIfMissing(id) {
+                id = Number(id);
+                if (!Number.isFinite(id) || id <= 0) return;
+                if (state.answers[id] != null) return;
+                if (state.answerLoading[id]) return;
+                state.answerLoading[id] = true;
+                try {
+                    const res = await fetch(`/api/quiz/question/${id}/answer`);
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || ('HTTP ' + res.status));
+                    }
+                    const ct = res.headers.get('content-type') || '';
+                    let md;
+                    if (ct.indexOf('application/json') >= 0) {
+                        const payload = await res.json();
+                        md = (payload && typeof payload === 'object' && typeof payload.answer_md === 'string')
+                            ? payload.answer_md
+                            : (typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2));
+                    } else {
+                        md = await res.text();
+                    }
+                    if (!md || !md.trim()) {
+                        md = '> 本题未提供参考答案原文，可点击「来源」跳原页面查看。';
+                    }
+                    state.answers[id] = md;
+                    delete state.answerError[id];
+                } catch (e) {
+                    state.answerError[id] = (e && e.message) ? e.message : String(e);
+                } finally {
+                    state.answerLoading[id] = false;
+                }
+            }
+            function _markRevealed(id) {
+                id = Number(id);
+                if (!state.revealed[id]) {
+                    state.revealed[id] = true;
+                    state.revealedKeys++;
+                }
+            }
+            function _unmarkRevealed(id) {
+                id = Number(id);
+                if (state.revealed[id]) {
+                    delete state.revealed[id];
+                    state.revealedKeys = Math.max(0, state.revealedKeys - 1);
+                }
+            }
+            async function loadAnswer(id) {
+                id = Number(id);
+                _markRevealed(id);
+                await _fetchAnswerIfMissing(id);
+                updateAnswered();
+            }
+            function hideAnswer(id) {
+                id = Number(id);
+                _unmarkRevealed(id);
+                updateAnswered();
+            }
+            async function toggleExpandAll() {
+                if (typeof window !== 'undefined') {
+                    try {
+                        (window.__TRACE__ = window.__TRACE__ || []).push('toggleExpandAll fired expandAll=' + state.expandAll + ' qs=' + state.questions.length);
+                    } catch (e) { /* ignore */ }
+                }
+                state.expandAll = !state.expandAll;
+                if (state.expandAll) {
+                    // 显式并发：避免 forEach 串行调用丢失请求。先把 revealed 全部标记，再并发拉取。
+                    const ids = state.questions.map(q => Number(q.id)).filter(n => Number.isFinite(n) && n > 0);
+                    if (typeof window !== 'undefined') {
+                        try { (window.__TRACE__ = window.__TRACE__ || []).push('ids=' + ids.join(',')); } catch (e) { /* ignore */ }
+                    }
+                    ids.forEach(id => _markRevealed(id));
+                    await Promise.all(ids.map(id => _fetchAnswerIfMissing(id)));
+                } else {
+                    state.questions.forEach(q => _unmarkRevealed(Number(q.id)));
+                }
+                updateAnswered();
+            }
+            function updateAnswered() {
+                const total = state.questions.length || 1;
+                let cnt = 0;
+                state.questions.forEach(q => { if (state.revealed[Number(q.id)]) cnt++; });
+                state.answeredCount = cnt;
+                state.answeredPct = Math.round((cnt / total) * 100);
+            }
+
+            function renderedAnswer(id) {
+                const md = state.answers[id];
+                if (md == null) return '';
+                if (typeof window.AppleMarkdown === 'undefined') {
+                    return '<pre style="white-space:pre-wrap;">' + md + '</pre>';
+                }
+                try { return window.AppleMarkdown.render(md); }
+                catch (e) { return '<pre style="white-space:pre-wrap;">' + md + '</pre>'; }
+            }
+
+            function scrollToQuestion(id) {
+                const el = document.getElementById('q' + id + '-stem');
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }
+
+            /* ---------- mount ---------- */
+            onMounted(async () => {
+                // 开发调试：把组件 proxy 暴露到 window，方便追踪 toggle 点击是否真的调用
+                try { window.__APP__ = getCurrentInstance().proxy; } catch (e) { /* ignore */ }
+                await checkHealth();
+                loadPositions();
+                loadSavedResumes();
+                // load quiz data in background
+                await loadQuizStats();
+                loadTopics();
+                nextTick(updateSegIndicator);
+                window.addEventListener('resize', updateSegIndicator, { passive: true });
+            });
+
+            watch([() => state.mode, () => state.pickBig], updateSegIndicator);
+
+            return {
+                // shared
+                currentApp,
+                serviceStatus,
+                ...toRefs(state),
+
+                // interview
+                saveConfig, testConnection, loadPositions, retryLoadPositions,
+                currentPositionName, currentPositionMeta,
+                loadSavedResumes, selectSavedResume, handlePdfUpload, parseResume,
+                startInterview, getFirstQuestion, sendAnswer, finishInterview,
+                restartInterview, resetInterviewFlow, gotoResumeUpload, chatContainer, scrollToBottom,
+
+                // quiz
+                loadQuizStats, loadTopics, filteredTopics, currentBigMidList, quickTopics,
+                truncate, shortHost, orderPrefix,
+                setMode, pickTopic, onQuizTabFocused, onQuizSidebarSearchEnter,
+                segRef, topicFilter, activeBig, activeMid,
+                fetchQuestions, retryLastQuery, nextBatch, nextBatchLabel,
+                isRevealed, loadAnswer, hideAnswer, toggleExpandAll, renderedAnswer,
+                scrollToQuestion,
+                segIndicatorStyle,
+                gotoHome, gotoPrevQ, gotoNextQ, currentQuestion,
+                pickRandomBigTopic, startRandomNow, onRandomTileClick,
+            };
+        },
+    }).use(ElementPlus).mount('#app');
+}
+</script>
 </body>
 </html>

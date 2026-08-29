@@ -128,13 +128,14 @@ class InterviewGraphAgent:
         self,
         session_id: str,
         resume_text: str,
-        resume_summary: str,
         candidate_name: str = "",
         skills: list[str] | None = None,
         *,
         target_position: str = "",
         jd_position_name: str = "",
         jd_raw_text: str = "",
+        custom_prompt: str = "",
+        resume_projects: str = "",
     ) -> dict:
         """创建面试会话，初始化 Agent 状态
 
@@ -142,18 +143,17 @@ class InterviewGraphAgent:
         - target_position: 岗位 ID（比如 agent_dev_engineer），前端选择后端后直接传入
         - jd_position_name: 岗位中文名（比如「Agent 开发工程师」）
         - jd_raw_text: 岗位 JD 原文（要求+加分项原文，plan_interview 里传给 LLM 做动态优先级）
+        - custom_prompt: 用户"再来一次"时填写的定向调整需求，注入面试官系统提示词
         """
         self._sessions[session_id] = {
             "messages": [],
-            "resume_summary": resume_summary,
+            "resume_text": resume_text,
+            "resume_projects": resume_projects,
             "candidate_name": candidate_name,
             "skills": skills or [],
             "candidate_profile": {
                 "name": candidate_name,
                 "skills": skills or [],
-                "skill_scores": {},
-                "strengths": [],
-                "weaknesses": [],
                 "answered_topics": [],
                 "difficulty_level": "mid",
             },
@@ -162,9 +162,9 @@ class InterviewGraphAgent:
             "max_questions": 15,
             "current_topic": "",
             "is_finished": False,
-            "rag_context": "",
             "last_tool_result": "",
-            "response_quality": "",
+            "answer_analysis": "",
+            "custom_prompt": custom_prompt,
             "api_key": self._api_key,
             "base_url": self._base_url,
             "model": self._model,
@@ -262,9 +262,10 @@ class InterviewGraphAgent:
             return json.loads(result.get("last_tool_result", "{}"))
         except (json.JSONDecodeError, TypeError):
             return {
-                "total_score": 0,
+                "conversation": [],
+                "answered_topics": [],
+                "question_count": 0,
                 "comment": "评估生成失败",
-                "recommendation": "待定",
             }
 
     def get_session(self, session_id: str) -> dict | None:

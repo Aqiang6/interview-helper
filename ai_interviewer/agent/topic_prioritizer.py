@@ -25,8 +25,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json as _json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Iterable, Protocol
 
 logger = logging.getLogger(__name__)
@@ -501,56 +504,61 @@ def prioritize_by_jd(
     base_url: str,
     model: str,
     skills: Iterable[str],
-    resume_summary: str = "",
     jd_position_name: str = "",
     jd_raw_text: str = "",
     temperature: float = 0.05,
 ) -> JDPriorityResult:
-    """JD 驱动的话题优先级排序（只有 LLM 主路径，失败直接抛错，不再降级）。
+    """JD 驱动的话题优先级排序。
 
-    任何失败（API Key 无效、base_url 不通、模型不存在、JSON 不可解析、返回空话题）
-    都直接抛出带上下文的异常，由上层 FastAPI 返回 4xx/5xx 给前端明确提示，
-    **不再静默降级到 TopicPrioritizer 规则排序**（API Key 错了继续跑毫无意义）。
+    预置 JD：优先读缓存（首次调 LLM 生成后保存），秒级返回。
+    自定义 JD：每次现场调 LLM 生成。
+    任何失败直接抛错，不降级。
     """
     from ai_interviewer.jd_engine.jd_loader import PRIORITY_SYSTEM_PROMPT
 
     skill_list = [s.strip() for s in skills if s and s.strip()]
+
+    # ── 1. 尝试读 JD 缓存（预置 JD 首次生成后保存，后续秒读）──
+    cached = _get_jd_cache(jd_raw_text)
+    if cached is not None:
+        return _build_result_from_cache(skill_list, cached, jd_position_name)
     user_prompt = f"""## 目标岗位
 {jd_position_name or "未指定岗位"}
 
 ## 岗位 JD 原文
 {jd_raw_text or "(未提供 JD，按通用技术岗排序)"}
 
-## 候选人简历技能列表（必须只能从这里挑，不能凭空加新技能）
-{', '.join(skill_list) if skill_list else "(无，输出 技术基础 兜底)"}
-
-## 候选人简历摘要
-{resume_summary or "(无)"}
+## 候选人简历技能列表（仅参考：候选人会什么；话题本身必须来自 JD 原文，技能列表不是话题来源）
+{', '.join(skill_list) if skill_list else "(未提供，话题完全从 JD 原文提取)"}
 
 按规则输出结构化 JSON。"""
 
     topics_per_skill_default = {"required": 4, "preferred": 3, "bonus": 2}
     topics_per_skill = dict(topics_per_skill_default)
     try:
-        from langchain_openai import ChatOpenAI
-        from langchain_core.messages import SystemMessage, HumanMessage
+        from openai import OpenAI
         import json as _json
 
-        llm = ChatOpenAI(
-            api_key=api_key,
-            base_url=base_url,
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=60, max_retries=0)
+        resp = client.chat.completions.create(
             model=model,
             temperature=temperature,
-            max_tokens=1600,
+            max_tokens=4096,
+            messages=[
+                {"role": "system", "content": PRIORITY_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
         )
-        result = llm.invoke([
-            SystemMessage(content=PRIORITY_SYSTEM_PROMPT),
-            HumanMessage(content=user_prompt),
-        ])
-        data = _extract_json(result.content)
+        content = resp.choices[0].message.content or ""
+        if not content:
+            raise RuntimeError("JD 排序 LLM 调用返回空内容")
+        data = _extract_json(content)
         ordered_topics = [str(t).strip() for t in data.get("ordered_topics", []) if str(t).strip()]
         importance_raw = data.get("skill_importance", {}) or {}
-        importance = {str(k).strip(): str(v).strip().lower() for k, v in importance_raw.items()}
+        importance = {}
+        for k, val in importance_raw.items():
+            v = str(val).strip().lower()
+            importance[str(k).strip()] = v if v in {"required", "preferred", "bonus"} else "preferred"
         max_q = int(data.get("suggested_max_questions", 15) or 15)
         tps_raw = data.get("topics_per_skill", {}) or {}
         for k, default_v in topics_per_skill_default.items():
@@ -599,6 +607,14 @@ def prioritize_by_jd(
         "JD 话题排序: position=%s max_q=%d topics=%s",
         jd_position_name, max_q, ordered_topics[:10],
     )
+
+    # ── 保存 JD 缓存（下次同 JD 秒读）──
+    _save_jd_cache(jd_raw_text, {
+        "skill_importance": importance,
+        "suggested_max_questions": max_q,
+        "topics_per_skill": topics_per_skill,
+    })
+
     return JDPriorityResult(
         ordered_topics=ordered_topics,
         ordered_aliases=aliases,
@@ -606,6 +622,111 @@ def prioritize_by_jd(
         suggested_max_questions=max_q,
         topics_per_skill=topics_per_skill,
         source="llm",
+    )
+
+
+# ── JD 缓存（预置 JD 首次 LLM 生成后保存，后续秒读，自定义 JD 也缓存）──
+
+_JD_CACHE_DIR = Path(__file__).resolve().parent.parent / ".jd_cache"
+
+# 话题名后缀词（归一化用：'RAG技术'/'RAG系统'/'RAG实践' → 'RAG'）
+_TOPIC_SUFFIXES = (
+    "架构", "原理", "系统", "技术", "实践", "基础", "能力", "框架", "工具",
+    "经验", "设计", "开发", "应用", "相关", "语言", "协议", "编排", "协作",
+)
+
+
+def _topic_core(topic: str) -> str:
+    """剥离话题名尾部修饰词，取核心词（'RAG技术'→'rag'），用于宽松匹配。"""
+    t = topic.strip().lower()
+    changed = True
+    while changed and t:
+        changed = False
+        for suf in _TOPIC_SUFFIXES:
+            if t.endswith(suf) and len(t) - len(suf) >= 2:
+                t = t[: -len(suf)]
+                changed = True
+    return t
+
+
+def _jd_cache_path(jd_raw_text: str) -> Path:
+    h = hashlib.sha256(jd_raw_text.strip().encode("utf-8")).hexdigest()[:16]
+    return _JD_CACHE_DIR / f"{h}.json"
+
+
+def _get_jd_cache(jd_raw_text: str) -> dict | None:
+    """读取 JD 缓存（skill_importance + max_questions + topics_per_skill）"""
+    if not jd_raw_text or not jd_raw_text.strip():
+        return None
+    p = _jd_cache_path(jd_raw_text)
+    if not p.exists():
+        return None
+    try:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        logger.info("JD 缓存命中，跳过 LLM 排序调用")
+        return data
+    except Exception as e:
+        logger.warning("JD 缓存读取失败，将重新调 LLM: %s", e)
+        return None
+
+
+def _save_jd_cache(jd_raw_text: str, data: dict) -> None:
+    """保存 JD 缓存"""
+    if not jd_raw_text or not jd_raw_text.strip():
+        return
+    try:
+        _JD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        p = _jd_cache_path(jd_raw_text)
+        p.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("JD 缓存已保存: %s", p.name)
+    except Exception as e:
+        logger.warning("JD 缓存保存失败: %s", e)
+
+
+def _build_result_from_cache(skill_list: list[str], cache: dict, jd_position_name: str) -> JDPriorityResult:
+    """用缓存的 skill_importance + 候选人 skills 排序，构建 JDPriorityResult
+
+    匹配策略（宽松归一化）：
+    1. 精确命中
+    2. 互为子串（'Redis' ↔ 'Redis缓存'）
+    3. 核心词互为子串（'RAG技术' ↔ 'RAG系统' → core 'rag'）
+    """
+    importance = cache.get("skill_importance", {})
+    max_q = int(cache.get("suggested_max_questions", 15) or 15)
+    topics_per_skill = cache.get("topics_per_skill", {"required": 4, "preferred": 3, "bonus": 2})
+
+    imp_values = {"required", "preferred", "bonus"}
+    cores = {k: _topic_core(k) for k in importance}
+
+    def _get_imp(skill: str) -> str:
+        imp = importance.get(skill)
+        if imp in imp_values:
+            return imp
+        sl = skill.lower()
+        sk_core = _topic_core(sl)
+        for k, v in importance.items():
+            if v not in imp_values:
+                continue
+            kl = k.lower()
+            if kl in sl or sl in kl:
+                return v
+            kc = cores.get(k, "")
+            if kc and sk_core and (kc in sk_core or sk_core in kc):
+                return v
+        return "preferred"
+
+    rank_map = {"required": 0, "preferred": 1, "bonus": 2}
+    ordered_topics = sorted(skill_list, key=lambda s: rank_map.get(_get_imp(s), 1))
+    aliases = [(t, t) for t in ordered_topics]
+
+    logger.info("JD 缓存排序: position=%s topics=%s", jd_position_name, ordered_topics[:10])
+    return JDPriorityResult(
+        ordered_topics=ordered_topics,
+        ordered_aliases=aliases,
+        skill_importance=importance,
+        suggested_max_questions=max_q,
+        topics_per_skill=topics_per_skill,
+        source="cache",
     )
 
 
@@ -640,13 +761,13 @@ def _extract_json(text: str) -> dict:
 
 
 # ═══════════════════════════════════════════
-#  路由二维决策表：回答质量 × JD 要求强度
+#  路由自然转换：按配额 + 题数决定追问 / 换题 / 结束
+#  （已取消 quality_level 评分机制，不再依赖回答质量等级）
 # ═══════════════════════════════════════════
 
 def make_route_decision(
     *,
-    quality: str,                                 # high / medium / low
-    importance: str,                              # required / preferred / bonus
+    importance: str,                              # required / preferred / bonus（决定配额）
     questions_on_this_topic: int,                 # 当前话题已经问了几轮
     questions_per_skill: dict[str, int],          # {"required":4, "preferred":3, "bonus":2}
     question_count: int,                          # 当前总题数
@@ -654,71 +775,44 @@ def make_route_decision(
     current_topic_index: int,                     # 当前话题索引
     total_topics: int,                            # 总话题数
 ) -> str:
-    """二维决策：比三句 if-else 更契合 JD 要求强度。
+    """自然状态转换：不依赖回答质量，默认在本话题追问到配额满再换题。
+
+    转换规则（从上到下短路）：
+    1. 题数到顶 → end
+    2. 本话题配额已满且还有后续话题 → next_topic
+    3. 已是最后一个话题 → followup（在末话题深挖到题数到顶）
+    4. 剩题不足以覆盖剩余话题 → next_topic（压缩追问，快速扫完）
+    5. 默认 → followup（自然追问）
 
     返回值与原 decide_next 兼容："end" / "followup" / "next_topic"。
     """
     importance = importance if importance in {"required", "preferred", "bonus"} else "preferred"
-    quality = quality if quality in {"high", "medium", "low"} else "medium"
     quota = int((questions_per_skill or {}).get(importance, 3))
 
-    # ── 最高优先级：题数到顶 → 直接结束 ──
+    # ── 1. 题数到顶 → 直接结束 ──
     if question_count >= max_questions:
         return "end"
-
-    # ── 次高：最后一题刚好到上限 → 结束 ──
+    # 最后一题刚好到上限 → 结束
     if question_count + 1 > max_questions:
         return "end"
 
-    # ── 二维决策核心 ──
-    # 决策矩阵 (importance, quality) → action
-    # 追问次数上限 = quota，同一话题问超配额不继续追问（防止卡死）
-    matrix: dict[tuple[str, str], str] = {
-        # JD 必备题答崩 → 必须追问到至少 medium
-        ("required", "low"):    "followup",
-        # JD 必备题中等 → 再追问一次冲高分（前提是还没到配额）
-        ("required", "medium"): "followup",
-        # JD 必备题高分 → 过关切题
-        ("required", "high"):   "next_topic",
-
-        # JD 偏好题答崩 → 追问 1-2 次；配额满了就切
-        ("preferred", "low"):   "followup",
-        # JD 偏好题中等 → 直接切（时间留给 required）
-        ("preferred", "medium"): "next_topic",
-        # JD 偏好题高分 → 过关切题
-        ("preferred", "high"):  "next_topic",
-
-        # 加分项答崩 → 直接切（不会也不影响岗位匹配度）
-        ("bonus", "low"):       "next_topic",
-        ("bonus", "medium"):    "next_topic",
-        ("bonus", "high"):      "next_topic",
-    }
-    decision = matrix.get((importance, quality), "next_topic")
-
-    # 配额保护：当前话题已经问够 quota 轮 → 强制 next_topic（除非没有更多话题了）
-    # questions_on_this_topic 记录"当前话题已经问了几轮"（由 caller 记）
-    if decision == "followup" and questions_on_this_topic >= quota and total_topics > 1:
+    # ── 2. 本话题配额已满且还有后续话题 → 换题 ──
+    if questions_on_this_topic >= quota and current_topic_index < total_topics - 1:
         decision = "next_topic"
-
-    # 边界：已经是最后一个话题，不可能 next_topic → 要么追问要么 end
-    if decision == "next_topic" and current_topic_index >= total_topics - 1 and total_topics > 0:
-        # 如果还有多余题数配额 → 继续在最后一个话题深问
-        if question_count + 1 <= max_questions:
-            decision = "followup"
-        else:
-            decision = "end"
-
-    # 边界：还剩的题数都不够覆盖剩的话题 → 尽量压缩，每个话题问一次快速收尾
-    remaining_questions = max_questions - question_count - 1
-    remaining_topics = max(1, total_topics - current_topic_index - 1)
-    if (decision == "followup"
-            and remaining_topics > 1
-            and remaining_questions < remaining_topics):
+    # ── 3. 已是最后一个话题 → 继续深挖（直到题数到顶由规则 1 兜底） ──
+    elif total_topics > 0 and current_topic_index >= total_topics - 1:
+        decision = "followup"
+    # ── 4. 剩题不足以覆盖剩余话题 → 压缩追问，快速换题扫完 ──
+    elif (total_topics - current_topic_index - 1) > 1 and \
+         (max_questions - question_count - 1) < (total_topics - current_topic_index - 1):
         decision = "next_topic"
+    # ── 5. 默认：自然追问 ──
+    else:
+        decision = "followup"
 
     logger.info(
-        "路由决策: importance=%s quality=%s decision=%s | topic_round=%d/%d q_count=%d/%d idx=%d/%d",
-        importance, quality, decision,
+        "路由决策: importance=%s decision=%s | topic_round=%d/%d q_count=%d/%d idx=%d/%d",
+        importance, decision,
         questions_on_this_topic, quota,
         question_count, max_questions,
         current_topic_index, max(1, total_topics),

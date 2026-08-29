@@ -16,13 +16,11 @@ from langchain_core.messages import BaseMessage
 class CandidateProfile(TypedDict, total=False):
     """候选人画像 - 长期记忆（Long-term Memory）
 
-    在面试过程中持续更新，记录候选人的能力评估。
+    在面试过程中持续更新。已移除评分机制（skill_scores/strengths/weaknesses），
+    仅保留已回答话题记录和定性分析笔记，用于指导后续提问方向。
     """
     name: str
     skills: list[str]
-    skill_scores: dict[str, int]          # 每个技能的得分 0-100
-    strengths: list[str]                  # 强项
-    weaknesses: list[str]                 # 弱项
     answered_topics: list[str]            # 已问答过的话题
     difficulty_level: str                 # "junior" | "mid" | "senior"
     overall_impression: str               # 整体印象
@@ -62,7 +60,8 @@ class InterviewState(TypedDict):
     interview_plan: InterviewPlan          # 面试计划
 
     # ── 简历信息 ──
-    resume_summary: str                    # 简历摘要
+    resume_text: str                       # 简历原文（用于项目追问参考）
+    resume_projects: str                   # 项目段落（用户可编辑裁剪，注入 {resume_projects}）
     candidate_name: str
     skills: list[str]                       # 候选人技能列表
 
@@ -77,14 +76,16 @@ class InterviewState(TypedDict):
     current_topic: str                     # 当前面试话题
     is_finished: bool                      # 面试是否结束
 
-    # ── RAG 上下文 ──
-    rag_context: str                       # RAG 检索到的参考知识
-
     # ── 工具调用结果 ──
     last_tool_result: str                   # 最近一次工具调用的结果
-    response_quality: str                  # 候选人最近一次回答的质量评估
 
     # ── LLM 配置 ──
     api_key: str
     base_url: str
     model: str
+
+    # ── 回答定性分析（替代原评分机制） ──
+    answer_analysis: str                  # 最近一次回答的定性分析（指导下一题方向）
+
+    # ── 自定义面试指令 ──
+    custom_prompt: str                     # 用户"再来一次"时填写的定向调整需求

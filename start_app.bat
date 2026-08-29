@@ -5,4 +5,4 @@ echo ========================================
 echo.
 echo Starting on http://0.0.0.0:8000
 echo.
-python -m ai_interviewer.app
+python -m ai_interviewer.app <NUL 2>NUL

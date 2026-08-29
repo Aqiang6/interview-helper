@@ -13,7 +13,6 @@ import asyncio
 import json
 import logging
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -24,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ai_interviewer.agent import InterviewGraphAgent
 from ai_interviewer.agent.topic_prioritizer import prioritize_by_jd
-from ai_interviewer.jd_engine.jd_loader import get_position, list_positions
+from ai_interviewer.jd_engine.jd_loader import create_custom_position, get_position, list_positions
 from ai_interviewer.resume_parser import parse_pdf, parse_text
 
 logger = logging.getLogger(__name__)
@@ -60,28 +59,6 @@ def _get_agent(session_id: str) -> InterviewGraphAgent:
     if session_id not in _sessions:
         _sessions[session_id] = InterviewGraphAgent(api_key="")
     return _sessions[session_id]
-
-
-def _parse_resume(text: str | None, is_pdf: bool = False) -> dict:
-    """解析简历"""
-    if not text:
-        raise HTTPException(status_code=400, detail="简历内容不能为空")
-    if is_pdf:
-        # PDF 前端传 bytes base64 的话这里简化处理
-        import base64
-        data = base64.b64decode(text)
-        rd = parse_pdf(data)
-    else:
-        rd = parse_text(text)
-    return {
-        "raw_text": rd.raw_text,
-        "name": rd.name,
-        "skills": rd.skills,
-        "projects": rd.projects,
-        "experience_years": rd.experience_years,
-        "education": rd.education,
-        "summary": rd.summary,
-    }
 
 
 # ═══════════════════════════════════════════
@@ -143,6 +120,8 @@ async def api_parse_resume(request: Request):
     data = await request.json()
     text = data.get("text", "")
     rd = parse_text(text)
+    from ai_interviewer.agent.nodes import _extract_project_details
+    llm_projects = _extract_project_details(rd.raw_text)
     return {
         "raw_text": rd.raw_text,
         "name": rd.name,
@@ -151,6 +130,7 @@ async def api_parse_resume(request: Request):
         "experience_years": rd.experience_years,
         "education": rd.education,
         "summary": rd.summary,
+        "llm_projects": llm_projects,
     }
 
 
@@ -170,6 +150,8 @@ async def api_parse_pdf(request: Request):
         raw_sample = rd.raw_text[:500]
         logger.info(f"PDF 原始文本长度: {len(rd.raw_text)}")
         logger.info(f"PDF 原始文本repr(前200字符): {repr(raw_sample[:200])}")
+        from ai_interviewer.agent.nodes import _extract_project_details
+        llm_projects = _extract_project_details(rd.raw_text)
         return {
             "raw_text": rd.raw_text,
             "name": rd.name,
@@ -178,40 +160,79 @@ async def api_parse_pdf(request: Request):
             "experience_years": rd.experience_years,
             "education": rd.education,
             "summary": rd.summary,
+            "llm_projects": llm_projects,
         }
     except Exception as e:
         logger.error("PDF 解析失败: %s", e)
         raise HTTPException(status_code=500, detail=f"PDF 解析失败: {str(e)}")
 
 
+@app.get("/api/resumes")
+async def api_list_saved_resumes():
+    """返回已保存的简历缓存列表（前端「已保存简历」界面直接选用，免重复解析）"""
+    from ai_interviewer.resume_cache import list_cached_resumes
+    try:
+        return {"resumes": list_cached_resumes()}
+    except Exception as e:
+        logger.exception("加载已保存简历列表失败")
+        raise HTTPException(status_code=500, detail=f"加载已保存简历失败: {str(e)}")
+
+
+@app.get("/api/resumes/{hash}")
+async def api_get_saved_resume(hash: str):
+    """获取单条已保存简历的完整数据（含 raw_text），供前端选中后直接开始面试"""
+    from ai_interviewer.agent.nodes import _extract_project_details
+    from ai_interviewer.resume_cache import get_cached_by_hash
+    cached = get_cached_by_hash(hash)
+    if cached is None:
+        raise HTTPException(status_code=404, detail="简历不存在或缓存已被清除")
+    result = cached.to_dict()
+    result["llm_projects"] = _extract_project_details(cached.raw_text)
+    return result
+
+
 @app.post("/api/start-interview")
 async def api_start_interview(request: Request):
-    """开始面试（支持前端选择岗位，后端自动注入 JD）
+    """开始面试（支持前端选择岗位或自定义 JD，后端自动注入）
 
-    参数新增 target_position（岗位 ID，可选）：
-    - 传了 target_position → 自动从腾讯 JD 里取对应岗位的 name/raw_text 注入到 session state
-      plan_interview 节点会基于 JD + 简历动态决定 topic 优先级、话题配额、总题数
-    - 没传 target_position → 走通用技术岗 TopicPrioritizer 规则排序（老行为兼容）
+    参数说明：
+    - target_position: 预置岗位 ID（从 /api/positions 获取）
+    - custom_jd_name + custom_jd_text: 自定义岗位（用户直接填写 JD 文本）
+    - custom_prompt: "再来一次"时的定向调整需求，注入面试官系统提示词
+    - resume_text: 简历原文（用于项目追问参考）
     """
     data = await request.json()
     api_key = data.get("api_key", "")
     base_url = data.get("base_url", "https://api.openai.com/v1")
     model = data.get("model", "gpt-4o")
     resume_text = data.get("resume_text", "")
-    resume_summary = data.get("resume_summary", resume_text[:1000])
     candidate_name = data.get("candidate_name", "")
     skills = data.get("skills", [])
     target_position = (data.get("target_position") or "").strip()
+    custom_jd_name = (data.get("custom_jd_name") or "").strip()
+    custom_jd_text = (data.get("custom_jd_text") or "").strip()
+    custom_prompt = (data.get("custom_prompt") or "").strip()
+    resume_projects = (data.get("resume_projects") or "").strip()
 
     if not api_key:
         raise HTTPException(status_code=400, detail="请先配置 API Key")
     if not resume_text:
         raise HTTPException(status_code=400, detail="请先上传简历")
 
-    # ── JD 解析：target_position → name / raw_text ──
+    # ── JD 解析：预置岗位 / 自定义 JD ──
     jd_position_name: str = ""
     jd_raw_text: str = ""
-    if target_position:
+    if custom_jd_name and custom_jd_text:
+        # 自定义 JD 优先
+        try:
+            pos = create_custom_position(custom_jd_name, custom_jd_text)
+            jd_position_name = pos.name
+            jd_raw_text = pos.raw_text
+            target_position = pos.position_id
+        except Exception as e:
+            logger.exception("自定义 JD 解析失败")
+            raise HTTPException(status_code=500, detail=f"自定义 JD 解析失败: {str(e)}")
+    elif target_position:
         try:
             pos = get_position(target_position)
             if pos is None:
@@ -231,88 +252,74 @@ async def api_start_interview(request: Request):
     agent.create_session(
         session_id=session_id,
         resume_text=resume_text,
-        resume_summary=resume_summary,
         candidate_name=candidate_name,
         skills=skills,
         target_position=target_position,
         jd_position_name=jd_position_name,
         jd_raw_text=jd_raw_text,
+        custom_prompt=custom_prompt,
+        resume_projects=resume_projects,
     )
 
-    # ── 首题提速：后台线程预生成面试计划（复用 prioritize_by_jd 结果，不阻塞 start-interview 接口）
-    # plan_interview 节点命中 "已有 interview_plan.topics → return {}"，跳过 1 次 LLM，首题快 40%+
-    #
-    # 为什么放后台线程？因为用户反馈"点开始面试后圈圈转很久"——LLM 调一次要 3~10 秒，
-    # 放在 start-interview 里同步跑会让按钮 loading 时间超长（API Key 错/超时甚至能卡 30s）。
-    # 先返回 200，后台跑；get_first_question 那边会等结果或抛出真实错误，体验更顺滑。
-    session_ref = {"id": session_id, "agent": agent}
+    # ── 生成面试计划（在线程池跑同步 openai 调用，避免阻塞 async event loop）──
+    try:
+        jd_result = await asyncio.to_thread(
+            prioritize_by_jd,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            skills=skills,
+            jd_position_name=jd_position_name or "通用技术岗",
+            jd_raw_text=jd_raw_text,
+        )
+        sorted_topics = list(jd_result.ordered_topics) or ["技术基础"]
+        topic_aliases = {canonical: original for original, canonical in jd_result.ordered_aliases}
+        if not topic_aliases and sorted_topics:
+            topic_aliases = {t: t for t in sorted_topics}
+        topic_question_counter = {t: 0 for t in sorted_topics}
+        req_count = sum(1 for v in (jd_result.skill_importance or {}).values() if v == "required")
 
-    def _bg_pregen_plan():
-        try:
-            jd_result = prioritize_by_jd(
-                api_key=api_key,
-                base_url=base_url,
-                model=model,
-                skills=skills,
-                resume_summary=resume_summary,
-                jd_position_name=jd_position_name or "通用技术岗",
-                jd_raw_text=jd_raw_text,
-            )
-            sorted_topics = list(jd_result.ordered_topics) or ["技术基础"]
-            topic_aliases = {canonical: original for original, canonical in jd_result.ordered_aliases}
-            if not topic_aliases and sorted_topics:
-                topic_aliases = {t: t for t in sorted_topics}
-            topic_question_counter = {t: 0 for t in sorted_topics}
-            req_count = sum(1 for v in (jd_result.skill_importance or {}).values() if v == "required")
-
-            interview_plan = {
-                "topics": sorted_topics,
-                "topic_aliases": topic_aliases,
-                "current_topic_index": 0,
-                "phase": "deep_dive" if req_count >= 2 else "basics",
-                "questions_per_topic": 3,
-                "skill_importance": dict(jd_result.skill_importance or {}),
-                "topics_per_skill": dict(jd_result.topics_per_skill or {}),
-                "topic_question_counter": topic_question_counter,
-                "position_id": target_position,
-                "position_name": jd_position_name,
-                "priority_source": jd_result.source,
-            }
-            max_questions_final = int(jd_result.suggested_max_questions or 15)
-            current_topic_final = sorted_topics[0] if sorted_topics else "技术基础"
-            session_ref["agent"]._sessions[session_ref["id"]].update({
-                "interview_plan": interview_plan,
-                "max_questions": max_questions_final,
-                "current_topic": current_topic_final,
-                "_plan_ready": True,
-                "_plan_error": None,
-            })
-            logger.info(
-                "[start-interview][后台] 预生成面试计划完成(source=%s): position=%s max_q=%d required=%d topics=%s",
-                jd_result.source, jd_position_name or "通用", max_questions_final, req_count, sorted_topics[:8]
-            )
-        except Exception as e:
-            logger.exception("[start-interview][后台] 预生成面试计划失败，将在 get_first_question 抛出")
-            session_ref["agent"]._sessions.setdefault(session_ref["id"], {}).update({
-                "_plan_ready": False,
-                "_plan_error": str(e),
-            })
-
-    # 先占位：plan 未就绪，get_first_question 会轮询等待 / 抛错
-    agent._sessions.setdefault(session_id, {}).update({
-        "_plan_ready": False,
-        "_plan_error": None,
-    })
-    threading.Thread(target=_bg_pregen_plan, name=f"plan-{session_id[-6:]}", daemon=True).start()
+        interview_plan = {
+            "topics": sorted_topics,
+            "topic_aliases": topic_aliases,
+            "current_topic_index": 0,
+            "phase": "deep_dive" if req_count >= 2 else "basics",
+            "questions_per_topic": 3,
+            "skill_importance": dict(jd_result.skill_importance or {}),
+            "topics_per_skill": dict(jd_result.topics_per_skill or {}),
+            "topic_question_counter": topic_question_counter,
+            "position_id": target_position,
+            "position_name": jd_position_name,
+            "priority_source": jd_result.source,
+        }
+        max_questions_final = int(jd_result.suggested_max_questions or 15)
+        current_topic_final = sorted_topics[0] if sorted_topics else "技术基础"
+        agent._sessions[session_id].update({
+            "interview_plan": interview_plan,
+            "max_questions": max_questions_final,
+            "current_topic": current_topic_final,
+        })
+        logger.info(
+            "[start-interview] 面试计划生成完成(source=%s): position=%s max_q=%d required=%d topics=%s",
+            jd_result.source, jd_position_name or "通用", max_questions_final, req_count, sorted_topics[:8]
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[start-interview] 面试计划生成失败")
+        raise HTTPException(status_code=400, detail=str(e))
 
     return {
         "session_id": session_id,
         "status": "ready",
-        "plan_pregenerating": True,
+        "plan_source": getattr(jd_result, "source", "llm"),
         "position": {
             "id": target_position,
             "name": jd_position_name,
         } if target_position else None,
+        "max_questions": max_questions_final,
+        "topics_count": len(sorted_topics),
+        "required_count": req_count,
     }
 
 
@@ -341,71 +348,16 @@ async def api_chat(request: Request):
     }
 
 
-@app.get("/api/plan-status")
-async def api_plan_status(session_id: str = "session_1"):
-    """轻量轮询接口：返回后台预生成面试计划的进度（避免前端 HTTP 请求卡住）。
-
-    前端 start-interview 之后立刻显示"面试官正在看简历"，
-    然后每 0.3s 调这个接口直到 ready=true → 切到"面试官正在输入"再调 first-question。
-    """
-    agent = _sessions.get(session_id)
-    if not agent or not agent.get_session(session_id):
-        raise HTTPException(status_code=404, detail="面试会话不存在，请先调用 /api/start-interview")
-    s = agent.get_session(session_id) or {}
-    plan = s.get("interview_plan") or {}
-    return {
-        "ready": bool(s.get("_plan_ready")),
-        "error": s.get("_plan_error"),   # None 表示没错误
-        "position": {
-            "id": plan.get("position_id"),
-            "name": plan.get("position_name"),
-        } if plan.get("position_name") else None,
-        "max_questions": s.get("max_questions"),
-        "topics_count": len(plan.get("topics", []) or []),
-        "required_count": sum(1 for v in (plan.get("skill_importance") or {}).values() if v == "required"),
-    }
-
-
 @app.post("/api/first-question")
 async def api_first_question(request: Request):
     """获取第一个面试问题
 
-    等待后台预生成面试计划完成（轮询 最多 45s），ready 了再跑 graph：
-    - 如果 plan 预生成失败（_plan_error 非空）直接 400 抛原始错误给前端
-    - 如果 plan 预生成好了，graph.plan_interview 命中"已有计划跳过"省 1 次 LLM
+    面试计划已在 start-interview 同步生成，直接跑 graph 出第一题。
     """
     data = await request.json()
     session_id = data.get("session_id", "session_1")
 
     agent = _get_agent(session_id)
-    session = agent.get_session(session_id) or {}
-
-    # ═══ 等后台预生成面试计划 ═══
-    if not session.get("_plan_ready"):
-        waited = 0.0
-        while waited < 45.0:
-            # 后台线程失败，直接把真实错误抛前端
-            if session.get("_plan_error"):
-                msg = str(session["_plan_error"])
-                logger.error("首题启动前置失败（后台预生成抛出）: %s", msg)
-                raise HTTPException(status_code=400, detail=msg)
-            if session.get("_plan_ready"):
-                break
-            # async sleep，不阻塞 event loop
-            await asyncio.sleep(0.3)
-            waited += 0.3
-            # 刷新 session 引用（后台线程 update 了 dict）
-            session = agent.get_session(session_id) or {}
-        # 超时兜底
-        if not session.get("_plan_ready") and not session.get("_plan_error"):
-            err = (
-                f"面试计划预生成超时（45s）。可能原因：model={agent.model!r} 或 base_url={agent.base_url!r} 连不上，"
-                f"或 API Key 响应慢；请检查配置后重试。"
-            )
-            logger.error(err)
-            raise HTTPException(status_code=408, detail=err)
-        if session.get("_plan_error"):
-            raise HTTPException(status_code=400, detail=str(session["_plan_error"]))
 
     try:
         response = await agent.get_first_question(session_id)
@@ -478,6 +430,165 @@ async def api_evaluation(session_id: str = "session_1"):
     return evaluation
 
 
+# ═══════════════════════════════════════════
+#  刷题助手 API（PostgreSQL + pgvector 知识库）
+# ═══════════════════════════════════════════
+
+def _quiz_available() -> None:
+    """检查刷题助手是否已配置（未配置时给出清晰提示，不使用 fallback）。"""
+    from ai_interviewer.config import get_settings
+    s = get_settings()
+    if not s.postgres_dsn:
+        raise HTTPException(status_code=503, detail="未配置 POSTGRES_DSN，刷题助手未启用。请在 .env 中完成 PostgreSQL 配置后重试。")
+    backend = (getattr(s, "quiz_embedding_backend", "") or "").lower()
+    if backend == "openai" and not s.openai_api_key:
+        raise HTTPException(status_code=503, detail="未配置 OPENAI_API_KEY，无法使用 embedding/自定义主题检索。请在 .env 中设置后重试。")
+
+
+@app.get("/api/quiz/stats")
+async def api_quiz_stats():
+    """题库统计：总题数 / 大标题数 / 中标题数 / 来源页数。"""
+    _quiz_available()
+    try:
+        from ai_interviewer.quiz import retriever
+        return retriever.stats()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("查询题库统计失败")
+        raise HTTPException(status_code=500, detail=f"查询题库统计失败: {type(e).__name__}: {e}")
+
+
+@app.get("/api/quiz/topics")
+async def api_quiz_topics():
+    """返回主题树：大标题 → [中标题+数量]，用于"自选主题"界面。"""
+    _quiz_available()
+    try:
+        from ai_interviewer.quiz import retriever
+        nodes = retriever.list_topics()
+        return {"topics": [n.as_dict() for n in nodes]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("加载主题树失败")
+        raise HTTPException(status_code=500, detail=f"加载主题树失败: {type(e).__name__}: {e}")
+
+
+@app.post("/api/quiz/ingest")
+async def api_quiz_ingest(request: Request):
+    """触发爬取入库流程。
+
+    body 可选字段：
+    - urls: list[str]  自定义 URL 列表（为空/不传则使用项目内置 爬虫.txt）
+    - ensure_schema: bool = true  是否执行 ensure_schema（建表+vector列+HNSW索引）
+
+    返回：IngestReport.as_dict()，包含 pages 成功/失败明细 与 questions 新增/更新/跳过数量。
+    """
+    _quiz_available()
+    data = await request.json() or {}
+    urls = data.get("urls") or None
+    do_schema = bool(data.get("ensure_schema", True))
+    try:
+        from ai_interviewer.quiz import ingest as quiz_ingest
+        if do_schema:
+            from ai_interviewer.quiz.db import ensure_schema
+            ensure_schema()
+        report = await quiz_ingest.ingest_from_default_file(urls=urls)
+        return report.as_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("题库入库失败")
+        raise HTTPException(status_code=500, detail=f"题库入库失败: {type(e).__name__}: {e}")
+
+
+@app.post("/api/quiz/question")
+async def api_quiz_pick(request: Request):
+    """刷题出题入口，三模式合一。
+
+    body::
+
+        {
+          "mode": "random" | "by_topic" | "custom",   // 必填
+          "count": 10,                                 // 可选，默认 1 / by_topic 不传=整章节
+          // -- mode=by_topic --
+          "big_topic": "大模型基础面试题总结",          // 必填
+          "mid_topic": "LLM 运行机制",                 // 可选
+          "shuffle": false,                            // 可选，是否打乱原题序
+          // -- mode=custom --
+          "custom_topic": "我想练JVM内存模型和GC",      // 必填
+          "min_similarity": 0.3,                       // 可选，覆盖 .env QUIZ_MIN_SIMILARITY
+          // -- 所有模式可选 --
+          "exclude_ids": [1,2,3]                       // 已做过题 id 列表，random 模式会排除
+        }
+    """
+    _quiz_available()
+    data = await request.json() or {}
+    mode = (data.get("mode") or "").strip()
+    if mode not in {"random", "by_topic", "custom"}:
+        raise HTTPException(status_code=400, detail="mode 必须为 random / by_topic / custom 之一")
+
+    count_raw = data.get("count")
+    count = int(count_raw) if count_raw is not None and int(count_raw) > 0 else None
+
+    try:
+        from ai_interviewer.quiz import retriever
+        if mode == "random":
+            items = retriever.pick_random(
+                count=(count or 1),
+                exclude_ids=data.get("exclude_ids") or None,
+            )
+        elif mode == "by_topic":
+            big = (data.get("big_topic") or "").strip()
+            if not big:
+                raise HTTPException(status_code=400, detail="by_topic 模式下 big_topic 必填")
+            mid = (data.get("mid_topic") or "").strip() or None
+            items = retriever.pick_by_topic(
+                big_topic=big,
+                mid_topic=mid,
+                count=count,
+                shuffle=bool(data.get("shuffle", False)),
+            )
+        else:  # custom
+            topic = (data.get("custom_topic") or "").strip()
+            if not topic:
+                raise HTTPException(status_code=400, detail="custom 模式下 custom_topic 必填")
+            min_sim_raw = data.get("min_similarity")
+            min_sim = float(min_sim_raw) if min_sim_raw is not None else None
+            items = retriever.pick_by_custom(
+                custom_topic=topic,
+                count=count,
+                min_similarity=min_sim,
+            )
+        return {
+            "mode": mode,
+            "count": len(items),
+            "questions": [it.as_dict() for it in items],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("出题失败")
+        raise HTTPException(status_code=500, detail=f"出题失败: {type(e).__name__}: {e}")
+
+
+@app.get("/api/quiz/question/{question_id}/answer")
+async def api_quiz_answer(question_id: int):
+    """点击"显示答案"：返回某题的完整答案 Markdown（含链接/图片/表格/代码）。"""
+    _quiz_available()
+    try:
+        from ai_interviewer.quiz import retriever
+        ans = retriever.get_answer(question_id)
+        if ans is None:
+            raise HTTPException(status_code=404, detail=f"题目 id={question_id} 不存在")
+        return ans
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("取答案失败 id=%s", question_id)
+        raise HTTPException(status_code=500, detail=f"取答案失败: {type(e).__name__}: {e}")
+
+
 @app.get("/api/health")
 async def api_health():
     """健康检查"""
@@ -498,44 +609,6 @@ async def api_agent_state(session_id: str = "session_1"):
         "question_count": state.get("question_count", 0),
         "max_questions": state.get("max_questions", 15),
         "is_finished": state.get("is_finished", False),
-        "response_quality": state.get("response_quality", ""),
-    }
-
-
-# ═══════════════════════════════════════════
-#  RAG 知识库 API
-# ═══════════════════════════════════════════
-
-@app.get("/api/knowledge-base")
-async def api_knowledge_base_overview():
-    """知识库概览"""
-    from ai_interviewer.rag_engine.knowledge_base import get_knowledge_base
-    kb = get_knowledge_base()
-    if not kb.is_ready:
-        await kb.load()
-    return kb.to_dict()
-
-
-@app.get("/api/knowledge-base/categories")
-async def api_knowledge_base_categories():
-    """获取知识库分类"""
-    from ai_interviewer.rag_engine.knowledge_base import get_knowledge_base
-    kb = get_knowledge_base()
-    if not kb.is_ready:
-        await kb.load()
-    return {"categories": kb.get_categories()}
-
-
-@app.get("/api/knowledge-base/search")
-async def api_knowledge_base_search(q: str = "", top_k: int = 5):
-    """搜索知识库"""
-    from ai_interviewer.rag_engine.retriever import get_retriever
-    retriever = get_retriever()
-    result = await retriever.retrieve(q, top_k=top_k)
-    return {
-        "query": result.query,
-        "items": [item.to_dict() for item in result.items],
-        "scores": result.scores,
     }
 
 

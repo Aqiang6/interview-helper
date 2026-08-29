@@ -1,0 +1,30 @@
+{
+  "skill_importance": {
+    "多Agent协作框架": "required",
+    "任务规划与调度": "required",
+    "工具调用与执行引擎": "required",
+    "Agent的记忆系统": "required",
+    "推理链路": "required",
+    "决策机制": "required",
+    "Planning": "required",
+    "Memory": "required",
+    "Tool Use": "required",
+    "Reflection": "required",
+    "LangGraph": "required",
+    "AutoGen": "required",
+    "CrewAI": "required",
+    "MetaGPT": "required",
+    "Prompt Engineering": "required",
+    "RAG系统搭建": "bonus",
+    "向量检索": "bonus",
+    "知识图谱": "bonus",
+    "Agent系统构建": "bonus",
+    "Agent评测与质量体系建设": "bonus"
+  },
+  "suggested_max_questions": 18,
+  "topics_per_skill": {
+    "required": 4,
+    "preferred": 3,
+    "bonus": 2
+  }
+}

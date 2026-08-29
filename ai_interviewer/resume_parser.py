@@ -190,79 +190,72 @@ def parse_text(text: str) -> ResumeData:
 
 
 def parse_pdf(file_bytes: bytes) -> ResumeData:
-    """解析 PDF 简历，提取文本后调用 parse_text"""
+    """解析 PDF 简历：先查缓存，命中直接返回；未命中则用 Apache Tika + OCR 解析后缓存
+
+    解析策略（取消所有兜底机制，只用 Tika + OCR）：
+    1. Apache Tika 提取文本（适用于文本型 PDF）
+    2. 如果 Tika 提取结果有效性过低（扫描件），用 OCR 重新提取
+    3. 解析完成后保存到缓存（含向量化），下次上传同一 PDF 直接返回
+    """
+    from ai_interviewer.resume_cache import get_cached, save_cached
+
+    # ── 缓存命中：直接返回 ──
+    cached = get_cached(file_bytes)
+    if cached is not None:
+        logger.info("简历缓存命中，跳过解析和向量化")
+        return ResumeData(
+            raw_text=cached.raw_text,
+            name=cached.name,
+            skills=cached.skills,
+            projects=cached.projects,
+            experience_years=cached.experience_years,
+            education=cached.education,
+            summary=cached.summary,
+        )
+
+    # ── 缓存未命中：用 Apache Tika 解析 ──
     try:
-        extractors = [
-            ("pdfplumber", _extract_with_pdfplumber),
-            ("PyMuPDF", _extract_with_pymupdf),
-            ("PyPDF2", _extract_with_pypdf2),
-            ("OCR", _extract_with_ocr),
-        ]
-        
-        full_text = ""
-        best_validity = 0
-        
-        for name, extractor in extractors:
-            try:
-                text = extractor(file_bytes)
-                if text:
-                    logger.info(f"使用 {name} 解析 PDF，文本长度: {len(text)}")
-                    validity = _check_text_validity(text)
-                    logger.info(f"{name} 解析结果有效性: {validity:.2f}")
-                    if validity > best_validity:
-                        best_validity = validity
-                        full_text = text
-            except ImportError:
-                logger.info(f"{name} 未安装，跳过")
-            except Exception as e:
-                logger.warning(f"{name} 解析失败: {e}")
-        
+        full_text = _extract_with_tika(file_bytes)
+        validity = _check_text_validity(full_text)
+        logger.info("Tika 解析结果: 文本长度=%d, 有效性=%.2f", len(full_text), validity)
+
+        # 有效性过低 → 判定为扫描件，用 OCR 重新提取
+        if validity < 0.15:
+            logger.info("Tika 提取有效性过低(%.2f < 0.15)，判定为扫描件，启用 OCR", validity)
+            ocr_text = _extract_with_ocr(file_bytes)
+            if _check_text_validity(ocr_text) > validity:
+                full_text = ocr_text
+                logger.info("OCR 解析结果: 文本长度=%d", len(full_text))
+
         if not full_text.strip():
-            logger.warning("PDF 解析结果为空，可能为扫描件")
-            return ResumeData(raw_text="[PDF 解析失败，请手动粘贴简历文本]")
-        
-        logger.info(f"选择最佳解析结果，有效性: {best_validity:.2f}")
-        return parse_text(full_text)
+            logger.warning("PDF 解析结果为空（Tika + OCR 均无有效文本）")
+            return ResumeData(raw_text="[PDF 解析失败：Tika 和 OCR 均未能提取有效文本，请手动粘贴简历文本]")
+
+        # 解析简历结构
+        rd = parse_text(full_text)
+
+        # ── 保存到缓存（已取消向量化，只存文本解析结果） ──
+        save_cached(file_bytes, rd)
+
+        return rd
     except Exception as e:
         logger.error("PDF 解析失败: %s", e)
         return ResumeData(raw_text=f"[PDF 解析失败: {e}]")
 
 
-def _extract_with_pdfplumber(file_bytes: bytes) -> str:
-    """使用 pdfplumber 提取 PDF 文本"""
-    import pdfplumber
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        text_parts: list[str] = []
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text_parts.append(page_text)
-        return "\n".join(text_parts)
+def _extract_with_tika(file_bytes: bytes) -> str:
+    """使用 Apache Tika 提取 PDF 文本
 
+    tika-python 会在首次调用时自动下载 tika-server.jar 并启动本地服务，
+    需要 Java 运行环境（JRE）。如果 Java 未安装会直接报错。
+    """
+    import tika
+    from tika import parser as tika_parser
 
-def _extract_with_pymupdf(file_bytes: bytes) -> str:
-    """使用 PyMuPDF 提取 PDF 文本"""
-    import fitz
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    text_parts: list[str] = []
-    for page in doc:
-        page_text = page.get_text()
-        if page_text:
-            text_parts.append(page_text)
-    doc.close()
-    return "\n".join(text_parts)
-
-
-def _extract_with_pypdf2(file_bytes: bytes) -> str:
-    """使用 PyPDF2 提取 PDF 文本"""
-    import PyPDF2
-    reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-    text_parts: list[str] = []
-    for page in reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text_parts.append(page_text)
-    return "\n".join(text_parts)
+    # tika.init_remote_only=False 表示用本地 Tika server
+    parsed = tika_parser.from_buffer(file_bytes)
+    text = parsed.get("content", "") or ""
+    return text.strip()
 
 
 def _check_text_validity(text: str) -> float:
@@ -308,9 +301,13 @@ def _find_tesseract() -> str | None:
 
 
 def _extract_with_ocr(file_bytes: bytes) -> str:
-    """使用 OCR 提取 PDF 文本（处理扫描件）"""
+    """使用 OCR 提取 PDF 文本（处理扫描件）
+
+    使用 pdf2image 将 PDF 页面转为图片（需要系统安装 poppler），
+    再用 pytesseract 进行 OCR 识别（需要系统安装 Tesseract）。
+    """
     import pytesseract
-    import fitz
+    from pdf2image import convert_from_bytes
     from PIL import Image
 
     # 自动检测 Tesseract 路径
@@ -318,18 +315,14 @@ def _extract_with_ocr(file_bytes: bytes) -> str:
     if tesseract_path:
         pytesseract.pytesseract.tesseract_cmd = tesseract_path
         logger.info("使用 Tesseract: %s", tesseract_path)
-    else:
-        logger.info("未找到 Tesseract，使用默认路径")
 
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    # 将 PDF 每页转为 300dpi 的 PIL Image
+    images = convert_from_bytes(file_bytes, dpi=300)
     text_parts: list[str] = []
-    for page in doc:
-        pix = page.get_pixmap(dpi=300)
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
+    for img in images:
         page_text = pytesseract.image_to_string(img, lang="chi_sim+eng")
         if page_text:
             text_parts.append(page_text)
-    doc.close()
     return "\n".join(text_parts)
 
 

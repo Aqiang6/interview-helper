@@ -1,0 +1,25 @@
+{
+  "skill_importance": {
+    "AI应用技能": "required",
+    "扎实的编程能力": "required",
+    "TCP/UDP网络协议及相关编程": "required",
+    "进程间通讯编程": "required",
+    "专业软件知识": "required",
+    "Python、Shell等脚本语言": "preferred",
+    "MySQL及SQL语言、编程": "preferred",
+    "NoSQL, Key-value存储原理": "preferred",
+    "分布式系统设计与开发": "preferred",
+    "负载均衡技术": "preferred",
+    "系统容灾设计": "preferred",
+    "高可用系统": "preferred",
+    "云原生相关技术": "bonus",
+    "利用AI工具完成实际项目": "bonus",
+    "大模型API调用和AI能力集成": "bonus"
+  },
+  "suggested_max_questions": 18,
+  "topics_per_skill": {
+    "required": 4,
+    "preferred": 3,
+    "bonus": 2
+  }
+}
