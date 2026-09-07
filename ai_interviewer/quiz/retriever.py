@@ -290,7 +290,105 @@ def pick_by_custom(
 
 
 # ═══════════════════════════════════════════
-#  5. 显示答案
+#  5. AI 问答助手：语义检索 + 带答案返回
+# ═══════════════════════════════════════════
+
+@dataclass
+class QAContextItem:
+    """问答助手检索到的上下文片段（含完整答案，供 LLM 综合回答 + 末尾参考例题展示）。"""
+
+    id: int
+    big_topic: str
+    mid_topic: str
+    question: str
+    answer_md: str
+    source_url: str
+    source_url_with_anchor: str
+    similarity: Optional[float]
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "big_topic": self.big_topic,
+            "mid_topic": self.mid_topic,
+            "question": self.question,
+            "answer_md": self.answer_md,
+            "source_url": self.source_url,
+            "source_url_with_anchor": self.source_url_with_anchor,
+            "similarity": self.similarity,
+        }
+
+
+def search_for_qa(
+    query: str,
+    *,
+    count: Optional[int] = None,
+    min_similarity: Optional[float] = None,
+) -> list[QAContextItem]:
+    """AI 问答助手专用检索：语义召回最相关的题，且直接带出 ``answer_md``。
+
+    和 :func:`pick_by_custom` 的区别：
+    - 返回里包含 ``answer_md``，用于拼进 LLM 的上下文；
+    - 同时返回 similarity，供前端展示参考例题时排序。
+    """
+    if not query or not query.strip():
+        raise ValueError("查询不能为空")
+
+    s = get_settings()
+    limit = max(1, min(int(count or s.quiz_top_k), 500))
+    threshold = float(s.quiz_min_similarity if min_similarity is None else min_similarity)
+
+    # 方案1：QA 检索只用 question 文本做 embedding，不再把 query 复制三遍
+    # 塞进 big_topic｜mid_topic｜question 三段（否则停用词三倍加权，会让"句式像
+    # 但实体不匹配"的题得分偏高，例如问 LangChain/LangGraph 反而召回 HNSW/IVFFLAT）。
+    query_text = query
+
+    emb_client = _build_embeddings()
+    query_vec_list = emb_client.embed_query(query_text)
+    expected_dim = int(s.quiz_embedding_dimensions)
+    if len(query_vec_list) != expected_dim:
+        raise RuntimeError(
+            f"Embedding 维度不匹配：配置 QUIZ_EMBEDDING_DIMENSIONS={expected_dim}，"
+            f"但模型 {s.quiz_embedding_model!r} 实际返回 {len(query_vec_list)} 维。"
+        )
+    vec_lit = validate_embedding_literal(query_vec_list)
+
+    sql = text(
+        "SELECT "
+        "  id, big_topic, mid_topic, question, answer_md, source_url, answer_anchor, ordinal, "
+        f" (1 - (embedding <=> {vec_lit})) AS similarity "
+        "FROM quiz_questions "
+        f"WHERE (1 - (embedding <=> {vec_lit})) >= :thr "
+        f"ORDER BY embedding <=> {vec_lit} "
+        "LIMIT :lim"
+    ).bindparams(thr=threshold, lim=limit)
+
+    with session_scope() as sess:
+        rows = sess.execute(sql).mappings().all()
+
+    out: list[QAContextItem] = []
+    for r in rows:
+        src = r["source_url"] or ""
+        anchor = r["answer_anchor"] or ""
+        out.append(QAContextItem(
+            id=int(r["id"]),
+            big_topic=r["big_topic"],
+            mid_topic=r["mid_topic"],
+            question=r["question"],
+            answer_md=r["answer_md"],
+            source_url=src,
+            source_url_with_anchor=absolutize_source_url_anchor(src, anchor),
+            similarity=float(r["similarity"]) if r["similarity"] is not None else None,
+        ))
+    logger.info(
+        "[qa.retriever] query=%r 召回 %d 条（阈值=%s limit=%s）",
+        query[:80], len(out), threshold, limit,
+    )
+    return out
+
+
+# ═══════════════════════════════════════════
+#  6. 显示答案
 # ═══════════════════════════════════════════
 
 def get_answer(question_id: int) -> Optional[dict]:

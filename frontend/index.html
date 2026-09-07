@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="only light" />
-    <title>Interview Helper · 面试助手 &amp; 刷题助手</title>
+    <title>Interview Helper · 面试助手 / 刷题助手 / AI 问答助手</title>
     <meta name="description" content="中文面试双引擎：面试助手（简历+JD 驱动的模拟对话）+ 1167 题中文知识库（pgvector 语义检索，结构化出题）。" />
     <meta name="theme-color" content="#f5f5f7" />
     <meta property="og:title" content="Interview Helper · 面试助手 / 刷题助手" />
@@ -13,7 +13,7 @@
     <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%230071e3'/><text x='16' y='22' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,&quot;SF Pro Display&quot;,sans-serif' font-size='19' font-weight='700' fill='white'>I</text></svg>" />
 
     <!-- Apple-flavored design tokens -->
-    <link rel="stylesheet" href="/static/styles.apple.css" />
+    <link rel="stylesheet" href="/static/styles.apple.css?v=10" />
     <!-- Vue 3 + Element Plus (legacy interview flow still depends on them)
          NOTE: intentionally NOT `defer` because the inline <script> at the end of
          <body> references `Vue` / `ElementPlus` synchronously. Deferring these
@@ -23,7 +23,7 @@
     <script src="https://unpkg.com/element-plus"></script>
     <script src="https://unpkg.com/@element-plus/icons-vue"></script>
     <!-- Minimal Markdown renderer (no external dep) -->
-    <script src="/static/md.js"></script>
+    <script src="/static/md.js?v=2"></script>
 
     <style>
         /* ---------- Element Plus alignment to tokens (light-only, flat) ---------- */
@@ -226,6 +226,310 @@
         @media (max-width: 780px) {
             .control-grid .cg-3, .control-grid .cg-4, .control-grid .cg-6, .control-grid .cg-8 { grid-column: span 12; }
         }
+
+        /* ---------- AI 问答助手 ---------- */
+        .qa-hero {
+            background: linear-gradient(180deg, #eef4ff 0%, #ffffff 48%);
+            border-radius: 0 0 var(--r-lg) var(--r-lg);
+            padding: var(--sp-5) var(--sp-6) var(--sp-5);
+            margin: calc(var(--sp-6) * -1) calc(var(--sp-6) * -1) 0;
+        }
+        .qa-hero__kicker {
+            font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: 0.06em;
+            text-transform: uppercase; color: var(--accent); margin-bottom: var(--sp-1);
+        }
+        .qa-hero__title {
+            margin: 0; font-size: var(--fs-2xl); font-weight: var(--fw-bold); letter-spacing: -0.02em; color: var(--text);
+        }
+        .qa-hero__sub {
+            margin: var(--sp-1) 0 0; color: var(--text-3); font-size: var(--fs-sm); max-width: 64ch; line-height: 1.6;
+        }
+        .qa-hero__chips {
+            margin-top: var(--sp-3); display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center;
+        }
+
+        /* 问答主 box：固定高度，上方滚动区 + 下方固定输入框 */
+        .qa-box {
+            display: flex;
+            flex-direction: column;
+            background: #fff;
+            border: 0.5px solid var(--border);
+            border-radius: var(--r-2xl);
+            box-shadow: var(--shadow-sm);
+            overflow: hidden;
+            height: calc(100vh - 120px);
+        }
+        .qa-scroll {
+            flex: 1;
+            overflow-y: auto;
+            display: flex; flex-direction: column; gap: var(--sp-5);
+            background: #fff;
+            padding: var(--sp-6) var(--sp-6) var(--sp-5);
+        }
+        /* 空状态时，空提示往上靠近 hero，hero 保持在顶部 */
+        .qa-scroll--empty .qa-empty {
+            flex: 0 0 auto;
+            margin-top: var(--sp-3);
+        }
+        /* QA 消息：DeepSeek 风格，无头像，提问在上回答在下 */
+        .qa-msg {
+            display: flex;
+            flex-direction: column;
+            gap: var(--sp-3);
+        }
+        .qa-msg + .qa-msg {
+            margin-top: var(--sp-6);
+        }
+        .qa-status {
+            display: flex; align-items: center; gap: var(--sp-2);
+            color: var(--text-3); font-size: var(--fs-sm);
+            padding: var(--sp-2) 0;
+        }
+        .qa-status__text { line-height: 1; }
+        .qa-msg__q {
+            font-size: var(--fs-base);
+            font-weight: var(--fw-regular);
+            color: #fff;
+            line-height: 1.6;
+            text-align: right;
+            display: inline-block;
+            margin-left: auto;
+            padding: var(--sp-2) var(--sp-4);
+            background: #4D6BFE;
+            border-radius: var(--r-lg);
+            max-width: 85%;
+        }
+        .qa-msg--ai .qa-answer {
+            font-size: var(--fs-base);
+            font-weight: var(--fw-regular);
+            line-height: 1.6;
+            color: var(--text);
+        }
+        /* 空状态 */
+        .qa-empty {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: var(--sp-2);
+            color: var(--text-3);
+            text-align: center;
+            min-height: 300px;
+        }
+        .qa-empty__title {
+            font-size: var(--fs-xl);
+            font-weight: var(--fw-semibold);
+            color: var(--text-2);
+        }
+        .qa-empty__sub {
+            font-size: var(--fs-sm);
+            max-width: 40ch;
+        }
+        .qa-scroll::-webkit-scrollbar { width: 6px; }
+        .qa-scroll::-webkit-scrollbar-thumb { background: rgba(0,113,227,0.18); border-radius: 8px; }
+        .qa-scroll::-webkit-scrollbar-thumb:hover { background: rgba(0,113,227,0.32); }
+
+        /* AI 回答气泡放宽，容纳 Markdown 与参考例题 */
+        .chat-bubble--wide {
+            max-width: 100%;
+            padding: var(--sp-4) var(--sp-5);
+            line-height: 1.7;
+            background: var(--bg-elev);
+            border: 0.5px solid var(--border);
+            box-shadow: var(--shadow-xs);
+        }
+        .qa-answer { color: var(--text); }
+        .qa-answer :deep(h1), .qa-answer h1 { font-size: var(--fs-xl); margin: var(--sp-4) 0 var(--sp-2); font-weight: var(--fw-bold); }
+        .qa-answer :deep(h2), .qa-answer h2 { font-size: var(--fs-lg); margin: var(--sp-4) 0 var(--sp-2); font-weight: var(--fw-semibold); }
+        .qa-answer :deep(h3), .qa-answer h3 { font-size: var(--fs-md); margin: var(--sp-3) 0 var(--sp-1); font-weight: var(--fw-semibold); }
+        .qa-answer :deep(p), .qa-answer p { margin: var(--sp-2) 0; }
+        .qa-answer :deep(ul), .qa-answer :deep(ol), .qa-answer ul, .qa-answer ol { padding-left: var(--sp-5); margin: var(--sp-2) 0; }
+        .qa-answer :deep(li), .qa-answer li { margin: var(--sp-1) 0; }
+        .qa-answer :deep(code), .qa-answer code {
+            font-family: var(--font-mono); font-size: 0.88em;
+            padding: 1px 6px; border-radius: 6px; background: var(--bg-soft); border: 0.5px solid var(--border);
+        }
+        .qa-answer :deep(pre), .qa-answer pre {
+            background: #1d1d1f; color: #f5f5f7; border-radius: var(--r-lg);
+            padding: var(--sp-3) var(--sp-4); overflow-x: auto; margin: var(--sp-3) 0;
+        }
+        .qa-answer :deep(pre code), .qa-answer pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+        .qa-answer :deep(table), .qa-answer table {
+            border-collapse: collapse; width: 100%; margin: var(--sp-3) 0; font-size: var(--fs-sm);
+        }
+        .qa-answer :deep(th), .qa-answer :deep(td), .qa-answer th, .qa-answer td {
+            border: 0.5px solid var(--border); padding: var(--sp-2) var(--sp-3); text-align: left;
+        }
+        .qa-answer :deep(th), .qa-answer th { background: var(--bg-soft); font-weight: var(--fw-semibold); }
+        .qa-answer :deep(blockquote), .qa-answer blockquote {
+            border-left: 3px solid var(--accent); margin: var(--sp-3) 0; padding: var(--sp-1) var(--sp-4);
+            color: var(--text-2); background: var(--accent-soft); border-radius: 0 var(--r-md) var(--r-md) 0;
+        }
+        .qa-answer :deep(a), .qa-answer a { color: var(--accent); text-decoration: none; }
+        .qa-answer :deep(a:hover), .qa-answer a:hover { text-decoration: underline; }
+
+        /* 参考例题：可折叠小灰框 */
+        .qa-ref-toggle {
+            margin-top: var(--sp-4);
+        }
+        .qa-ref-toggle__btn {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: var(--sp-1) var(--sp-3);
+            background: var(--bg-soft);
+            border: 0.5px solid var(--border);
+            border-radius: var(--r-md);
+            font-size: var(--fs-sm);
+            color: var(--text-2);
+            cursor: pointer;
+            transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+        }
+        .qa-ref-toggle__btn:hover { background: var(--accent-soft); color: var(--accent); }
+        .qa-ref-toggle__icon { font-size: 11px; color: var(--text-3); }
+        .qa-ref-toggle__count {
+            margin-left: 4px;
+            font-size: var(--fs-xs); color: var(--text-3);
+            background: rgba(0,0,0,0.06);
+            padding: 1px 7px; border-radius: 999px;
+        }
+        .qa-refs {
+            margin-top: var(--sp-3);
+            display: flex; flex-direction: column; gap: var(--sp-2);
+        }
+        .qa-ref {
+            display: flex; gap: var(--sp-3); align-items: flex-start;
+            padding: var(--sp-3) var(--sp-4);
+            background: var(--bg-elev);
+            border: 0.5px solid var(--border);
+            border-radius: var(--r-lg); margin-bottom: var(--sp-2);
+            transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
+        }
+        .qa-ref:hover { border-color: var(--accent); box-shadow: var(--shadow-xs); }
+        .qa-ref__num {
+            flex-shrink: 0; width: 22px; height: 22px; border-radius: 999px;
+            background: var(--accent); color: #fff;
+            font-size: 11px; font-weight: 700;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .qa-ref__body { min-width: 0; flex: 1; }
+        .qa-ref__q { font-size: var(--fs-sm); color: var(--text); line-height: 1.55; font-weight: var(--fw-medium); }
+        .qa-ref__meta {
+            margin-top: var(--sp-2); display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center;
+        }
+        .qa-ref__link {
+            font-size: var(--fs-xs); color: var(--accent); text-decoration: none; margin-left: auto;
+        }
+        .qa-ref__link:hover { text-decoration: underline; }
+        .qa-ref__link--btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--accent);
+            font-size: var(--fs-xs);
+            padding: 0;
+            margin-left: var(--sp-2);
+        }
+        .qa-ref__link--btn:hover { text-decoration: underline; }
+
+        .qa-sendbar {
+            display: flex; gap: var(--sp-2); align-items: flex-end;
+            background: #fff;
+            border-top: 0.5px solid var(--divider);
+            padding: var(--sp-3) var(--sp-4) var(--sp-4);
+        }
+        .qa-textarea {
+            width: 100%;
+            flex: 1;
+            box-sizing: border-box;
+            border-radius: 12px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            background: #fff;
+            font-size: var(--fs-base);
+            line-height: 24px;
+            font-family: inherit;
+            resize: none;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+            transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
+            outline: none;
+            min-height: 40px;
+            max-height: 140px;
+            overflow-y: auto;
+        }
+        .qa-textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(0,113,227,0.12), 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .qa-textarea::placeholder { color: var(--text-3); }
+        .qa-sendbar .btn--primary {
+            box-sizing: border-box;
+            height: 40px;
+            min-width: 60px;
+            border-radius: 12px;
+            font-size: var(--fs-sm);
+        }
+
+        /* ---------- 刷题助手：下方区域与 Hero 衔接 ---------- */
+        /* seg + 控制卡合并为一个 box */
+        .quiz-controls {
+            display: flex; flex-direction: column;
+            background: var(--bg-elev);
+            border: 0.5px solid var(--border);
+            border-radius: var(--r-2xl);
+            box-shadow: var(--shadow-sm);
+            overflow: hidden;
+        }
+        .content .seg {
+            border-radius: 0;
+            background: var(--bg-soft);
+            box-shadow: none;
+            padding: 8px 10px;
+            border-bottom: 0.5px solid var(--divider);
+            justify-content: flex-start;
+            gap: 6px;
+        }
+        .content .seg .seg__action {
+            margin-left: auto;
+        }
+        .content .seg .seg__action .btn--primary {
+            background: var(--accent) !important;
+            color: #fff !important;
+            border-color: var(--accent) !important;
+        }
+        .content .seg .seg__action .btn--primary:hover {
+            background: var(--accent-hover) !important;
+            border-color: var(--accent-hover) !important;
+        }
+        .content .seg .seg__action .btn--primary:disabled {
+            background: var(--accent) !important;
+            color: #fff !important;
+            border-color: var(--accent) !important;
+            opacity: 1 !important;
+            cursor: pointer !important;
+        }
+        .content .seg button[aria-pressed="true"] {
+            background: var(--accent);
+            color: #fff;
+            box-shadow: var(--shadow-xs);
+        }
+        .content .control-card {
+            background: transparent;
+            border: none;
+            border-radius: 0;
+            box-shadow: none;
+            padding: var(--sp-5);
+        }
+        .content .qcard {
+            background: var(--bg-elev);
+            border: 0.5px solid var(--border);
+        }
+        .content .topic-board__col {
+            background: var(--bg-elev);
+            border: 0.5px solid var(--border);
+        }
+        .content .topic-board__col--options {
+            background: var(--bg-elev);
+        }
     </style>
 </head>
 <body>
@@ -251,6 +555,14 @@
                 :aria-selected="currentApp === 'quiz'"
                 @click="currentApp = 'quiz'; onQuizTabFocused();">
                 刷题助手
+            </button>
+            <button
+                class="nav__tab"
+                role="tab"
+                :aria-current="currentApp === 'qa' ? 'page' : undefined"
+                :aria-selected="currentApp === 'qa'"
+                @click="currentApp = 'qa'; randomizeQAExamples();">
+                AI 问答助手
             </button>
         </nav>
         <div class="nav__stat" aria-live="polite">
@@ -317,7 +629,7 @@
                             </el-upload>
                         </el-tab-pane>
                         <el-tab-pane label="粘贴文本" name="text">
-                            <el-input v-model="resumeText" type="textarea" :rows="6" placeholder="粘贴简历内容，可以是一段项目经历或完整简历..."></el-input>
+                            <textarea v-model="resumeText" class="qa-textarea" rows="6" placeholder="粘贴简历内容，可以是一段项目经历或完整简历..."></textarea>
                         </el-tab-pane>
                         <el-tab-pane label="已保存简历" name="saved">
                             <div v-if="!savedResumes.length" class="state" style="padding: var(--space-8);">
@@ -397,7 +709,7 @@
                                 <el-input v-model="customJdName" placeholder="如：资深 Java 后端工程师 / AI Agent 架构师"></el-input>
                             </el-form-item>
                             <el-form-item label="JD 内容（岗位描述 + 要求 + 加分项，纯文本即可）">
-                                <el-input v-model="customJdText" type="textarea" :rows="8" placeholder="粘贴或输入完整的 JD 内容...&#10;&#10;例如：&#10;岗位描述：&#10;1. 负责后端微服务架构设计与开发...&#10;&#10;岗位要求：&#10;1. 熟悉 Java/Spring Boot...&#10;2. 有分布式系统经验..."></el-input>
+                                <textarea v-model="customJdText" class="qa-textarea" rows="8" placeholder="粘贴或输入完整的 JD 内容...&#10;&#10;例如：&#10;岗位描述：&#10;1. 负责后端微服务架构设计与开发...&#10;&#10;岗位要求：&#10;1. 熟悉 Java/Spring Boot...&#10;2. 有分布式系统经验..."></textarea>
                             </el-form-item>
                         </el-form>
                     </div>
@@ -419,7 +731,7 @@
                                 <pre style="background: var(--bg-soft); border: 0.5px solid var(--border); border-radius: var(--r-md); padding: var(--space-2); font-family: var(--font-mono); font-size: 13px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; margin: 0;">{{ resume.raw_text || '（空）' }}</pre>
                             </el-collapse-item>
                         </el-collapse>
-                        <div class="action-bar">
+                        <div class="action-bar" id="start-interview-bar">
                             <el-button type="success" @click="startInterview" :loading="loading" size="large">开始面试{{ currentPositionName() ? ' · ' + currentPositionName() : '' }}</el-button>
                         </div>
                         <div v-if="loadingStatus" style="text-align: center; padding: var(--space-3); color: var(--accent); font-size: var(--fs-base);">{{ loadingStatus }}</div>
@@ -460,7 +772,7 @@
                                     </div>
                                     <div class="chat-bubble">{{ msg.content }}</div>
                                 </div>
-                                <div v-if="msg.role === 'candidate'" class="chat-avatar chat-avatar--me" title="你">我</div>
+                                <div v-if="msg.role === 'candidate'" class="chat-avatar chat-avatar--me" title="你"></div>
                             </div>
                         </template>
 
@@ -476,17 +788,18 @@
                     </div>
 
                     <div class="chat-sendbar">
-                        <el-input
+                        <textarea
                             v-model="userAnswer"
-                            type="textarea"
-                            :autosize="{ minRows: 1, maxRows: 5 }"
-                            placeholder="输入你的回答（Enter 发送，Shift + Enter 换行）"
+                            class="qa-textarea"
+                            rows="1"
+                            placeholder="输入你的回答…"
+                            @input="autoResizeTextarea"
                             @keydown.enter.exact.prevent="sendAnswer"
-                            :disabled="finished || streaming">
-                        </el-input>
-                        <el-button type="primary" size="large" @click="sendAnswer" :loading="streaming" :disabled="finished || !userAnswer.trim()">
-                            发送
-                        </el-button>
+                            :disabled="finished || streaming"></textarea>
+                        <button type="button" class="btn btn--primary" @click="sendAnswer" :disabled="finished || streaming || !userAnswer.trim()">
+                            <span v-if="streaming">思考中…</span>
+                            <span v-else>发送</span>
+                        </button>
                     </div>
                 </div>
 
@@ -500,14 +813,17 @@
 
                     <div class="interview-done__box">
                         <label class="field-label">定向调整（可选）</label>
-                        <el-input
+                        <textarea
                             v-model="retryPrompt"
-                            type="textarea"
-                            :rows="5"
-                            placeholder="例如：多问 Redis 底层原理和源码实现；项目部分重点追问技术选型的理由；降低八股比例，多问实际线上问题排查；针对我简历里的 RAG 项目深挖向量检索细节"></el-input>
+                            class="qa-textarea"
+                            rows="5"
+                            placeholder="例如：多问 Redis 底层原理和源码实现；项目部分重点追问技术选型的理由；降低八股比例，多问实际线上问题排查；针对我简历里的 RAG 项目深挖向量检索细节"></textarea>
                         <div class="interview-done__actions">
-                            <el-button type="success" size="large" @click="restartInterview" :loading="loading" :disabled="!resumeParsed">再来一次</el-button>
-                            <el-button size="large" @click="gotoResumeUpload">回到投递简历</el-button>
+                            <button type="button" class="btn btn--primary" @click="restartInterview" :disabled="loading || !resumeParsed">
+                                <span v-if="loading">加载中…</span>
+                                <span v-else>再来一次</span>
+                            </button>
+                            <button type="button" class="btn" @click="gotoResumeUpload">回到投递简历</button>
                         </div>
                     </div>
                 </div>
@@ -518,7 +834,7 @@
     </main>
 
     <!-- ============ 刷题助手（全屏：无侧边栏，启动卡置顶） ============ -->
-    <main v-else class="shell shell--single wide" aria-label="刷题助手工作区">
+    <main v-else-if="currentApp === 'quiz'" class="shell shell--single wide" aria-label="刷题助手工作区">
         <section class="content" aria-label="刷题控制与结果">
             <!-- ============ Home：默认随机抽题为主（含 随机抽题 hero + 两种入口 + 模式切换） ============ -->
             <template v-if="quizStage === 'home'">
@@ -540,49 +856,44 @@
                             </button>
                         </div>
                         <div class="quiz-hero__chiprow">
-                            <span class="chip chip--ghost" style="pointer-events:none;">试试这些主题：</span>
+                            <span class="chip chip--ghost" style="pointer-events:none;">试试这些题：</span>
                             <button
-                                v-for="t in quickTopics"
-                                :key="t.big_topic"
+                                v-for="(q, i) in quickQuestions"
+                                :key="q.id || i"
                                 class="chip"
                                 type="button"
-                                @click="() => { mode = 'by_topic'; pickBig = t.big_topic; pickMid = ''; nextTick(() => fetchQuestions('by_topic')); }">
-                                {{ truncate(t.big_topic, 14) }}
+                                @click="startQuickQuestion(q)"
+                                :disabled="questionsLoading">
+                                {{ truncate(q.question, 18) }}
                             </button>
                         </div>
                     </div>
                 </div>
 
-                <!-- Segmented Picker：随机 / 主题 / 自定义 三种模式切换（用户要更多模式切换入口也在这里） -->
+                <!-- Segmented Picker + 控制卡：包在一起缩小间距，避免割裂 -->
+                <div class="quiz-controls">
                 <div class="seg" ref="segRef" role="tablist" aria-label="出题模式">
                     <button type="button" role="tab" :aria-pressed="mode === 'random'" @click="mode = 'random'">① 随机抽题</button>
                     <button type="button" role="tab" :aria-pressed="mode === 'by_topic'" @click="mode = 'by_topic'">② 按主题 / 章节</button>
                     <button type="button" role="tab" :aria-pressed="mode === 'custom'" @click="mode = 'custom'">③ 自定义出题</button>
-                    <span class="seg__indicator" :style="segIndicatorStyle"></span>
-                </div>
-
-                <!-- 控制卡：对应当前选中的模式 -->
-                <div class="control-card" v-if="mode">
-                    <div class="control-card__head">
-                        <h3>
-                            <template v-if="mode === 'random'">随机抽题 · 高级选项</template>
-                            <template v-else-if="mode === 'by_topic'">按主题 / 章节出题</template>
-                            <template v-else>自定义出题（语义检索）</template>
-                        </h3>
+                    <div class="seg__action">
                         <button v-if="mode === 'random'" class="btn btn--primary" @click="fetchQuestions('random')" :disabled="questionsLoading">
                             <span v-if="questionsLoading">加载中…</span>
                             <span v-else>开始随机练习</span>
                         </button>
-                        <button v-else-if="mode === 'by_topic'" class="btn btn--primary" @click="fetchQuestions('by_topic')" :disabled="!pickBig || questionsLoading">
+                        <button v-else-if="mode === 'by_topic'" class="btn btn--primary" @click="fetchQuestions('by_topic')" :disabled="questionsLoading">
                             <span v-if="questionsLoading">加载中…</span>
                             <span v-else>开始 {{ truncate(pickBig || '按主题', 10) }} 练习</span>
                         </button>
-                        <button v-else class="btn btn--primary" @click="fetchQuestions('custom')" :disabled="!customTopic.trim() || questionsLoading">
+                        <button v-else class="btn btn--primary" @click="fetchQuestions('custom')" :disabled="questionsLoading">
                             <span v-if="questionsLoading">检索中…</span>
                             <span v-else>开始自定义出题</span>
                         </button>
                     </div>
+                </div>
 
+                <!-- 控制卡：对应当前选中的模式（选项在上，按钮在下） -->
+                <div class="control-card" v-if="mode">
                     <!-- random -->
                     <div v-if="mode === 'random'" class="control-grid control-grid--flat">
                         <div class="cg-6">
@@ -697,6 +1008,7 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /.quiz-controls -->
 
                 <!-- 结果区：加载 / 错误 / 空态 -->
                 <div class="card card--soft" v-if="questionsLoading">
@@ -803,6 +1115,102 @@
         </section>
     </main>
 
+    <!-- ============ AI 问答助手（基于知识库的 LLM 问答，回答末尾附参考例题） ============ -->
+    <main v-else-if="currentApp === 'qa'" class="shell shell--single wide" aria-label="AI 问答助手工作区">
+        <section class="content" aria-label="问答助手主区域">
+            <!-- 一体化 box：上方滚动区（hero + 聊天），下方固定输入框 -->
+            <div class="qa-box">
+                <div class="qa-scroll" :class="{ 'qa-scroll--empty': qaMessages.length === 0 }" ref="qaChatContainer">
+                    <!-- Hero 介绍（随内容一起滚动） -->
+                    <div class="qa-hero">
+                        <div class="qa-hero__kicker">💡 AI 问答助手</div>
+                        <h1 class="qa-hero__title">基于内部知识库的技术问答</h1>
+                        <p class="qa-hero__sub">
+                            提问任意技术问题，系统会从题库中语义检索最相关的内容，由 AI 综合作答，并在回答末尾附上可直接练习的参考例题。
+                        </p>
+                        <div class="qa-hero__chips">
+                            <span class="chip chip--ghost" style="pointer-events:none;">试试：</span>
+                            <button
+                                v-for="ex in qaExamples"
+                                :key="ex"
+                                class="chip"
+                                type="button"
+                                @click="qaInput = ex">
+                                {{ ex }}
+                            </button>
+                        </div>
+                    </div>
+                    <!-- 空状态：还没开始提问 -->
+                    <div v-if="qaMessages.length === 0" class="qa-empty">
+                        <div class="qa-empty__title">有什么想问的？</div>
+                        <div class="qa-empty__sub">在下方输入技术问题，AI 会结合知识库给出专业解答</div>
+                    </div>
+                    <div
+                        v-for="(msg, idx) in qaMessages"
+                        :key="idx"
+                        :class="['qa-msg', msg.role === 'user' ? 'qa-msg--user' : 'qa-msg--ai']">
+                        <!-- 用户提问 -->
+                        <div v-if="msg.role === 'user'" class="qa-msg__q">{{ msg.content }}</div>
+                        <!-- AI 回答 -->
+                        <template v-else>
+                            <div v-if="msg.content" class="qa-answer" v-html="renderQAAnswer(msg)"></div>
+                            <!-- 状态提示：向量化 / 检索 / 生成答案 -->
+                            <div v-if="msg.streaming && !msg.content && msg.status" class="qa-status">
+                                <span class="chat-dots"><i></i><i></i><i></i></span>
+                                <span class="qa-status__text">{{ msg.status }}</span>
+                            </div>
+                            <!-- 正在思考 -->
+                            <div v-if="msg.streaming && !msg.content && !msg.status" class="chat-bubble--typing" style="margin-top:8px;">
+                                <span class="chat-dots"><i></i><i></i><i></i></span>
+                            </div>
+                            <!-- 参考例题 -->
+                            <div v-if="!msg.streaming && msg.references && msg.references.length" class="qa-ref-toggle">
+                                <button type="button" class="qa-ref-toggle__btn" @click="toggleRefs(msg)">
+                                    <span class="qa-ref-toggle__icon">{{ msg.refsExpanded ? '▾' : '▸' }}</span>
+                                    <span>📎 参考例题</span>
+                                    <span class="qa-ref-toggle__count">{{ msg.references.length }} 道</span>
+                                </button>
+                                <div v-if="msg.refsExpanded" class="qa-refs">
+                                    <div
+                                        v-for="(r, ri) in msg.references"
+                                        :key="r.id"
+                                        class="qa-ref"
+                                        @click="jumpToQuizQuestion(r)"
+                                        style="cursor:pointer;">
+                                        <div class="qa-ref__num">{{ ri + 1 }}</div>
+                                        <div class="qa-ref__body">
+                                            <div class="qa-ref__q">{{ r.question }}</div>
+                                            <div class="qa-ref__meta">
+                                                <span class="chip chip--sm" style="pointer-events:none;">{{ r.big_topic }}</span>
+                                                <span v-if="r.mid_topic" class="chip chip--sm chip--ghost" style="pointer-events:none;">{{ r.mid_topic }}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- 输入栏：固定在 box 底部 -->
+                <div class="qa-sendbar">
+                    <textarea
+                        v-model="qaInput"
+                        class="qa-textarea"
+                        rows="1"
+                        placeholder="输入你的技术问题…"
+                        @input="autoResizeTextarea"
+                        @keydown.enter.exact.prevent="askQuestion"
+                        :disabled="qaLoading"></textarea>
+                    <button type="button" class="btn btn--primary" @click="askQuestion" :disabled="qaLoading || !qaInput.trim()">
+                        <span v-if="qaLoading">发送中…</span>
+                        <span v-else>发送</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+    </main>
+
 </div>
 
 <script>
@@ -836,7 +1244,7 @@ function main() {
     createApp({
         setup() {
             /* ---------- shared / shell ---------- */
-            const currentApp = ref('interview');  // 'interview' | 'quiz'
+            const currentApp = ref('interview');  // 'interview' | 'quiz' | 'qa'
 
             const serviceStatus = computed(() => {
                 if (!state._healthChecked) return { color: 'warn', text: '检测后端…' };
@@ -941,6 +1349,13 @@ function main() {
                 answerError: reactive({}),     // id -> msg
                 revealed: reactive({}),        // id -> true（用对象避免 Vue 3 Set/Map 在某些浏览器端代理不触发 render 的坑；仍保持 set-like 语义）
                 revealedKeys: 0,               // size 辅助，用 plain number 保证触发 computed/template 更新
+
+                /* ---------- AI 问答助手 ---------- */
+                qaInput: '',
+                qaLoading: false,
+                qaMessages: reactive([]),      // { role: 'user'|'assistant', content, references:[], streaming, _time }
+                // qaExamples 现在由 randomizeQAExamples() 直接从题库随机抽样填入，
+                // 不再维护硬编码 pool（避免出现"题库里没有的题"被推荐）。
             });
 
             /* ---------- standalone refs (must NOT be nested inside reactive() state) ----------
@@ -951,6 +1366,8 @@ function main() {
             const topicFilter = ref('');
             const segIndicatorStyle = ref({ width: '1px', transform: 'translateX(0)' });
             const segRef = ref(null);
+            // QA 助手：从题库里随机抽取的示例问题（每次刷新/切 Tab 都会变）
+            const qaExamples = ref([]);
             // Topic-tree highlight mirrors the current by_topic selection so the sidebar
             // and picker dropdown stay visually in sync.
             const activeBig = ref('');
@@ -1031,7 +1448,12 @@ function main() {
                     state.resumeParsed = true;
                     state.pdfData = '';
                     state.resumeText = '';
-                    ElMessage.success('已选用缓存简历：' + (d.name || '未命名') + '，可直接选择岗位开始面试');
+                    nextTick(() => {
+                        setTimeout(() => {
+                            const el = document.getElementById('start-interview-bar');
+                            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }, 100);
+                    });
                 } catch (e) {
                     ElMessage.error('读取简历失败：' + e.message);
                 } finally { state.loading = false; }
@@ -1089,7 +1511,7 @@ function main() {
                     ElMessage.warning('请填写自定义岗位名称和 JD 内容'); return;
                 }
                 state.loading = true;
-                state.loadingStatus = '正在根据 JD 规划提问优先级...';
+                state.loadingStatus = '正在准备面试...';
                 try {
                     const reqBody = {
                         api_key: state.form.apiKey,
@@ -1219,7 +1641,7 @@ function main() {
                     return;
                 }
                 state.loading = true;
-                state.loadingStatus = '正在根据 JD 规划提问优先级...';
+                state.loadingStatus = '正在准备面试...';
                 try {
                     const reqBody = {
                         api_key: state.form.apiKey,
@@ -1357,13 +1779,42 @@ function main() {
                 return found ? (found.mid_topics || []) : [];
             });
 
-            // Hero 顶部「随机主题」chip 行：按题数最多挑 6 个，且每次刷新不抖动
-            const quickTopics = computed(() => {
-                const all = Array.isArray(state.topics) ? state.topics.slice() : [];
-                if (!all.length) return [];
-                const topSorted = all.slice().sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
-                return topSorted.slice(0, 6);
-            });
+            // Hero 顶部「试试这些题」chip 行：从题库随机抽 6 道（含 question+big_topic+mid_topic+id），
+            // 点击 chip 直接进入 focus mode 练这道题。每次切到 quiz tab 重新抽一批。
+            const quickQuestions = ref([]);
+            async function loadQuickQuestions() {
+                // topics 没加载完就不抽，避免与 loadTopics 抢连接
+                if (!state.topicsReady) return;
+                try {
+                    const res = await fetch('/api/quiz/question', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mode: 'random', count: 6 }),
+                    });
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    const qs = Array.isArray(data.questions) ? data.questions : [];
+                    quickQuestions.value = qs.slice(0, 6);
+                } catch (e) { /* 静默：chip 行不是核心入口 */ }
+            }
+            // 点击 chip：把这道题塞进 state.questions，切到 focus mode 直接练习
+            function startQuickQuestion(q) {
+                if (!q) return;
+                state.questions = [q];
+                state.currentQIndex = 0;
+                // 重置答案缓存，避免拿别的题的旧答案
+                Object.keys(state.answers).forEach(k => delete state.answers[k]);
+                Object.keys(state.answerLoading).forEach(k => delete state.answerLoading[k]);
+                Object.keys(state.answerError).forEach(k => delete state.answerError[k]);
+                Object.keys(state.revealed).forEach(k => delete state.revealed[k]);
+                state.revealedKeys = 0;
+                state.answeredCount = 0;
+                state.answeredPct = 0;
+                state.expandAll = false;
+                state.lastQueryMode = 'random';
+                state.quizStage = 'focus';
+                state.seenIds.add(Number(q.id));
+            }
 
             function truncate(s, n) {
                 if (!s) return '';
@@ -1431,6 +1882,8 @@ function main() {
 
             function onQuizTabFocused() {
                 updateSegIndicator();
+                // 每次切到 quiz tab 都重新抽一批「试试这些题」，让用户总能看到新鲜题
+                loadQuickQuestions();
             }
 
             watch(() => state.currentApp, (v) => {
@@ -1440,6 +1893,15 @@ function main() {
             let _lastFetchPayload = null;
             async function fetchQuestions(forceMode) {
                 const mode = forceMode || state.mode;
+                // 前置校验
+                if (mode === 'by_topic' && !state.pickBig) {
+                    state.questionError = '请先选择一个大主题';
+                    return;
+                }
+                if (mode === 'custom' && !state.customTopic.trim()) {
+                    state.questionError = '请先输入自定义出题的关键词';
+                    return;
+                }
                 state.questionsLoading = true;
                 state.questionError = '';
                 state.lastQueryMode = mode;
@@ -1649,6 +2111,17 @@ function main() {
                 await _fetchAnswerIfMissing(id);
                 updateAnswered();
             }
+            /** 从 AI 问答助手跳转到刷题界面，展示指定题目并自动展开答案 */
+            function jumpToQuizQuestion(ref) {
+                if (!ref) return;
+                state.questions = [ref];
+                state.currentQIndex = 0;
+                state.quizStage = 'focus';
+                currentApp.value = 'quiz';
+                nextTick(() => {
+                    loadAnswer(ref.id);
+                });
+            }
             function hideAnswer(id) {
                 id = Number(id);
                 _unmarkRevealed(id);
@@ -1699,6 +2172,151 @@ function main() {
                 }
             }
 
+            /* ---------- AI 问答助手 ---------- */
+            const qaChatContainer = ref(null);
+
+            // 从题库随机抽 5 道真实题填到「试试」chip 行（题库未就绪时留空，不打扰用户）。
+            // 失败不 fallback——chip 行不是核心入口，留空即可。
+            async function randomizeQAExamples() {
+                try {
+                    const res = await fetch('/api/quiz/question', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mode: 'random', count: 8 }),
+                    });
+                    if (!res.ok) { qaExamples.value = []; return; }
+                    const data = await res.json();
+                    const qs = Array.isArray(data.questions) ? data.questions : [];
+                    // Fisher-Yates 洗牌取前 5 个，让每次切 tab 都不一样
+                    const arr = qs.slice();
+                    for (let i = arr.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [arr[i], arr[j]] = [arr[j], arr[i]];
+                    }
+                    qaExamples.value = arr.slice(0, 5).map(q => q.question).filter(Boolean);
+                } catch (e) {
+                    qaExamples.value = [];
+                }
+            }
+
+            function _qaClock() {
+                try {
+                    const d = new Date();
+                    const h = String(d.getHours()).padStart(2, '0');
+                    const m = String(d.getMinutes()).padStart(2, '0');
+                    return `${h}:${m}`;
+                } catch (_) { return ''; }
+            }
+
+            function scrollQAToBottom() {
+                const el = qaChatContainer && qaChatContainer.value;
+                if (el) el.scrollTop = el.scrollHeight;
+            }
+
+            function toggleRefs(msg) {
+                msg.refsExpanded = !msg.refsExpanded;
+                if (msg.refsExpanded) {
+                    nextTick(() => setTimeout(scrollQAToBottom, 60));
+                }
+            }
+
+            function autoResizeTextarea(e) {
+                const el = e.target;
+                el.style.height = 'auto';
+                el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+            }
+
+            function renderQAAnswer(msg) {
+                const md = msg.content || '';
+                if (!md.trim()) return '';
+                if (typeof window.AppleMarkdown === 'undefined') {
+                    return '<pre style="white-space:pre-wrap;">' + md + '</pre>';
+                }
+                try { return window.AppleMarkdown.render(md); }
+                catch (e) { return '<pre style="white-space:pre-wrap;">' + md + '</pre>'; }
+            }
+
+            async function askQuestion() {
+                const q = (state.qaInput || '').trim();
+                if (!q || state.qaLoading) return;
+                if (!state.form.apiKey) {
+                    ElMessage.warning('请先在「面试助手 → 模型设置」中配置 API Key');
+                    return;
+                }
+                // 用户消息
+                state.qaMessages.push({ role: 'user', content: q, _time: _qaClock() });
+                state.qaInput = '';
+                nextTick(() => {
+                    const ta = document.querySelector('.qa-textarea');
+                    if (ta) { ta.style.height = 'auto'; }
+                });
+                // AI 占位（流式）
+                const aiMsg = reactive({ role: 'assistant', content: '', status: '', references: [], refsExpanded: false, streaming: true, _time: _qaClock() });
+                state.qaMessages.push(aiMsg);
+                state.qaLoading = true;
+                nextTick(scrollQAToBottom);
+
+                try {
+                    const res = await fetch('/api/qa/ask-stream', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            question: q,
+                            api_key: state.form.apiKey,
+                            base_url: state.form.baseUrl,
+                            model: state.form.model,
+                        }),
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || `请求失败: ${res.status}`);
+                    }
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buf = '';
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buf += decoder.decode(value, { stream: true });
+                        // SSE 按 \n\n 分帧
+                        let idx;
+                        while ((idx = buf.indexOf('\n\n')) !== -1) {
+                            const frame = buf.slice(0, idx).trim();
+                            buf = buf.slice(idx + 2);
+                            if (!frame.startsWith('data:')) continue;
+                            let payload;
+                            try { payload = JSON.parse(frame.slice(5).trim()); }
+                            catch (_) { continue; }
+                            if (payload.type === 'references') {
+                                aiMsg.references = payload.references || [];
+                            } else if (payload.type === 'status') {
+                                aiMsg.status = payload.content || '';
+                                if (!aiMsg.status) aiMsg.streaming = true;
+                                nextTick(scrollQAToBottom);
+                            } else if (payload.type === 'answer') {
+                                aiMsg.status = '';
+                                aiMsg.content += payload.content || '';
+                                nextTick(scrollQAToBottom);
+                            } else if (payload.type === 'error') {
+                                aiMsg.status = '';
+                                aiMsg.content = '⚠️ ' + (payload.error || '生成失败');
+                                aiMsg.streaming = false;
+                            } else if (payload.type === 'done') {
+                                aiMsg.streaming = false;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    aiMsg.content = '⚠️ 请求失败：' + e.message;
+                    aiMsg.streaming = false;
+                    ElMessage.error('问答失败：' + e.message);
+                } finally {
+                    aiMsg.streaming = false;
+                    state.qaLoading = false;
+                    nextTick(scrollQAToBottom);
+                }
+            }
+
             /* ---------- mount ---------- */
             onMounted(async () => {
                 // 开发调试：把组件 proxy 暴露到 window，方便追踪 toggle 点击是否真的调用
@@ -1708,7 +2326,8 @@ function main() {
                 loadSavedResumes();
                 // load quiz data in background
                 await loadQuizStats();
-                loadTopics();
+                loadTopics().then(() => loadQuickQuestions());
+                randomizeQAExamples();
                 nextTick(updateSegIndicator);
                 window.addEventListener('resize', updateSegIndicator, { passive: true });
             });
@@ -1729,7 +2348,7 @@ function main() {
                 restartInterview, resetInterviewFlow, gotoResumeUpload, chatContainer, scrollToBottom,
 
                 // quiz
-                loadQuizStats, loadTopics, filteredTopics, currentBigMidList, quickTopics,
+                loadQuizStats, loadTopics, filteredTopics, currentBigMidList, quickQuestions,
                 truncate, shortHost, orderPrefix,
                 setMode, pickTopic, onQuizTabFocused, onQuizSidebarSearchEnter,
                 segRef, topicFilter, activeBig, activeMid,
@@ -1737,8 +2356,13 @@ function main() {
                 isRevealed, loadAnswer, hideAnswer, toggleExpandAll, renderedAnswer,
                 scrollToQuestion,
                 segIndicatorStyle,
-                gotoHome, gotoPrevQ, gotoNextQ, currentQuestion,
+                gotoHome, gotoPrevQ, gotoNextQ, currentQuestion, jumpToQuizQuestion,
                 pickRandomBigTopic, startRandomNow, onRandomTileClick,
+                loadQuickQuestions, startQuickQuestion,
+
+                // qa assistant
+                qaChatContainer, askQuestion, renderQAAnswer, scrollQAToBottom, autoResizeTextarea, toggleRefs,
+                qaExamples, randomizeQAExamples,
             };
         },
     }).use(ElementPlus).mount('#app');

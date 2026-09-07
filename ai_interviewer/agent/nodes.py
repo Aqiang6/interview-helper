@@ -23,10 +23,6 @@ from ai_interviewer.agent.topic_prioritizer import (
     make_route_decision,
     prioritize_by_jd,
 )
-from ai_interviewer.agent.tools import (
-    _QUALITY_EVAL_SYSTEM,
-    _parse_analysis_json,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +34,7 @@ _INTERVIEWER_SYSTEM = """你是一位资深技术面试官，正在针对岗位�
 1. 根据目标岗位 JD 解析结果决定问题方向和深度：required 技能要深挖原理、源码、线上问题；bonus 技能点到为止即可
 2. 当前话题要求强度: {topic_importance_label}（required=必须问到深层、preferred=问到中等深度、bonus=快速扫一遍）
 3. 每次只问一个问题，层层递进，深度追问
-4. 根据候选人上一轮回答的定性分析调整追问方向
+4. 根据对话历史中候选人的上一轮回答调整追问方向
 5. 可调用工具辅助决策
 
 ## 项目追问策略（重点）
@@ -47,9 +43,6 @@ _INTERVIEWER_SYSTEM = """你是一位资深技术面试官，正在针对岗位�
 - 使用场景："为什么在这个场景用{{tech}}，它解决了什么问题？不用行不行？"
 - 效果验证："用了{{tech}}之后怎么验证效果？有没有量化指标？上线后有没有踩坑？"
 追问时直接引用简历中的具体项目名称和技术栈，不要泛泛而谈。
-
-## 上一轮回答分析（指导本题方向）
-{answer_analysis}
 
 ## 自定义面试指令
 {custom_prompt}
@@ -81,7 +74,6 @@ def plan_interview(state: InterviewState) -> dict:
     if state.get("interview_plan", {}).get("topics"):
         return {}
 
-    skills = state.get("skills", [])
     api_key = state.get("api_key", "")
     base_url = state.get("base_url", "https://api.openai.com/v1")
     model = state.get("model", "") or "gpt-4o-mini"
@@ -94,7 +86,6 @@ def plan_interview(state: InterviewState) -> dict:
         api_key=api_key,
         base_url=base_url,
         model=model,
-        skills=skills,
         jd_position_name=jd_position_name,
         jd_raw_text=jd_raw_text,
     )
@@ -166,14 +157,8 @@ def generate_question(state: InterviewState) -> dict:
     # 构建系统提示词
     position_name = plan.get("position_name") or state.get("jd_position_name") or "通用技术岗"
 
-    # 简历项目段落：优先用用户编辑的，没有才自动提取
+    # 简历项目段落
     resume_projects = state.get("resume_projects", "") or ""
-    if not resume_projects:
-        resume_raw = state.get("resume_text", "") or ""
-        resume_projects = _extract_project_details(resume_raw)
-
-    # 上一轮回答的定性分析（指导本题方向）
-    answer_analysis = state.get("answer_analysis", "") or "（首轮提问，无上一轮分析）"
 
     # 用户自定义面试指令（"再来一次"时填写的定向需求）
     custom_prompt = state.get("custom_prompt", "") or "（无）"
@@ -181,7 +166,6 @@ def generate_question(state: InterviewState) -> dict:
     system_content = _INTERVIEWER_SYSTEM.format(
         position_name=position_name,
         resume_projects=resume_projects or "（简历中未识别到项目段落）",
-        answer_analysis=answer_analysis,
         custom_prompt=custom_prompt,
         phase=plan.get("phase", "intro"),
         question_count=question_count,
@@ -235,104 +219,13 @@ def generate_question(state: InterviewState) -> dict:
 
 
 def evaluate_response(state: InterviewState) -> dict:
-    """节点3：定性分析候选人回答（已彻底取消 quality_level 评分）
+    """节点3：直通节点（占位）
 
-    通过 LLM 做定性分析：提取已覆盖要点 / 缺失点 / 追问方向。
-    不再产生任何质量等级（quality_level）或分数，路由决策完全由配额 + 题数自然转换。
-    分析结果注入下一题的系统提示词，保留回答对下次提问的影响。
-    任何失败（LLM 不可用 / JSON 解析失败）直接抛出 RuntimeError。
+    早期版本在此调用 LLM 做定性分析并产出 answer_analysis，该链路已删除：
+    出题上下文只需简历项目 + JD 解析结果，候选人回答本身就在 messages
+    历史里，出题 LLM 自会看到。保留节点以维持图拓扑稳定。
     """
-    messages = state.get("messages", [])
-    profile = dict(state.get("candidate_profile", {}))
-
-    # 获取最近的候选人回答
-    recent_human = None
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            recent_human = msg.content
-            break
-
-    if not recent_human:
-        return {}
-
-    current_topic = state.get("current_topic", "unknown")
-
-    # 更新已回答话题
-    answered = list(profile.get("answered_topics", []))
-    if current_topic not in answered:
-        answered.append(current_topic)
-    profile["answered_topics"] = answered
-
-    # ── LLM 定性分析（只提取信息，不打分） ──
-    eval_data = _llm_evaluate_answer(recent_human, current_topic, state)
-
-    # 构建给下一题参考的分析摘要（已移除"掌握程度"行）
-    analysis_parts = []
-    if eval_data["covered_well"]:
-        analysis_parts.append(f"已覆盖: {'；'.join(eval_data['covered_well'])}")
-    if eval_data["gaps"]:
-        analysis_parts.append(f"缺失: {'；'.join(eval_data['gaps'])}")
-    if eval_data["follow_up_direction"]:
-        analysis_parts.append(f"追问方向: {eval_data['follow_up_direction']}")
-    answer_analysis = " | ".join(analysis_parts) or "（本轮无明显分析点）"
-
-    logger.info(
-        "LLM 回答定性分析: topic=%s gaps=%s 追问方向=%s",
-        current_topic, eval_data["gaps"][:3], (eval_data["follow_up_direction"] or "")[:50],
-    )
-
-    return {
-        "candidate_profile": profile,
-        "answer_analysis": answer_analysis,
-    }
-
-
-def _llm_evaluate_answer(answer: str, topic: str, state: InterviewState) -> dict:
-    """调用 LLM 做定性分析（不再评分），任何失败直接抛 RuntimeError"""
-    from ai_interviewer.config import get_settings
-    settings = get_settings()
-    user_model = state.get("model") or settings.openai_model or "gpt-4o-mini"
-    try:
-        prompt = f"""## 当前面试话题
-{topic}
-
-## 候选人回答
-{answer}
-
-请按照分析要求输出 JSON。"""
-        openai_messages = [
-            {"role": "system", "content": _QUALITY_EVAL_SYSTEM},
-            {"role": "user", "content": prompt},
-        ]
-        content = _call_llm(
-            state, openai_messages,
-            temperature=0.1, max_tokens=600, timeout=30,
-        )
-        eval_data = _parse_analysis_json(content)
-        logger.info(
-            "LLM 定性分析: topic=%s covered=%s gaps=%s",
-            topic, eval_data["covered_well"][:2], eval_data["gaps"][:2],
-        )
-        return eval_data
-    except (RuntimeError, ValueError):
-        raise
-    except Exception as e:
-        err_type = type(e).__name__
-        effective_api_key = state.get("api_key") or settings.openai_api_key
-        effective_base_url = state.get("base_url") or settings.openai_base_url
-        if not effective_api_key:
-            masked_key = "(空)"
-        elif len(effective_api_key) <= 8:
-            masked_key = "***" + (effective_api_key[-4:] if len(effective_api_key) > 4 else "")
-        else:
-            masked_key = effective_api_key[:8] + "..." + effective_api_key[-4:]
-        msg = (
-            f"候选人回答分析失败，面试无法继续：[{err_type}] {str(e) or '(无错误消息)'}。"
-            f" | topic={topic} | model={user_model} | base_url={effective_base_url}"
-            f" | api_key={masked_key}"
-        )
-        logger.error(msg)
-        raise RuntimeError(msg) from e
+    return {}
 
 
 def decide_next(state: InterviewState) -> str:
@@ -412,258 +305,6 @@ def generate_evaluation(state: InterviewState) -> dict:
     }
 
 
-def _extract_project_details(resume_text: str, max_chars: int = 2000) -> str:
-    """从简历原文中提取项目相关段落，供面试官追问引用。
-
-    核心原则（用户明确要求：技能优势/核心优势一律不能出现在结果里）：
-    1) 起点：首个「工作经历/项目经验/工程经历/实习经历」段标题开始；
-    2) 全局截止：遇到「教育/学历/技能/自我评价/证书/奖项/兴趣/校园经历/
-       技能优势/核心优势/专业技能/技能清单/Skills/Tech…」这类段标题——
-       一律在该标题所在行的「上一行」截断（往上切，技能段一个字都不保留）；
-    3) 项目内部的「技术栈：XXX / Tech Stack：XXX」单行锚点，属于单个项目
-       的收尾信息，要保留；但如果「技术栈：XXX」之后紧接着就是技能段标题
-       或一大串零散技能关键字列表，那么切到「这行技术栈为止」（往下切，技
-       能列表不要带进来）；
-    4) 兜底返回前，再从后往前扫一遍：遇到技能段标题 / 纯技能关键字散点列
-       表，就往上切掉。
-    """
-    if not resume_text:
-        return ""
-
-    raw_lines = resume_text.split("\n")
-
-    # 项目段落触发词（短行标题）
-    project_start_markers = [
-        "项目", "经历", "工作经历", "项目经验", "工作经验", "工程经历",
-        "实习经历", "项目经历", "职业经历", "职业经验", "相关经历",
-        "PROJECT", "EXPERIENCE",
-    ]
-
-    # 全局段终止关键词（一旦作为短行标题出现，立即 STOP，所有后续内容不要）
-    section_stop_keywords = [
-        "教育背景", "教育经历", "学历", "学校", "毕业院校", "校园经历",
-        "技能", "技能特长", "专业技能", "核心技能", "技能清单", "技能优势",
-        "核心优势", "擅长技术", "掌握技能", "个人技能", "IT技能",
-        "自我评价", "自我评估", "个人评价", "总结", "自我介绍",
-        "证书", "资质", "获奖", "奖项", "荣誉",
-        "兴趣爱好", "兴趣", "爱好",
-        "语言能力", "作品集", "其他",
-        "References", "REFERENCES",
-        "Skill", "Skills", "SKILL", "SKILLS",
-        "Tech Stack", "TECH STACK",  # 单独出现在短行 → 作段标题处理
-    ]
-
-    # 项目段内"单行技术栈标注"锚点（后跟冒号/破折号，且不是长列表开头）
-    per_project_tech_anchors = [
-        "技术栈", "Tech Stack", "TECH STACK", "核心技术", "使用技术",
-        "开发环境", "技术要点", "技术方案", "技术选型", "涉及技术",
-    ]
-
-    # 纯「技能散点关键词」行（行内全是这种词，没有主谓句 → 判定为技能列表开头）
-    skill_bullet_keywords = [
-        "Java", "Python", "Go", "Golang", "C++", "Rust", "TypeScript", "JavaScript",
-        "Spring", "SpringBoot", "Spring Boot", "Spring Cloud", "MyBatis", "Dubbo",
-        "MySQL", "Redis", "Kafka", "RocketMQ", "RabbitMQ", "Elasticsearch", "ES",
-        "MongoDB", "PostgreSQL", "SQLServer", "Oracle",
-        "Linux", "Docker", "Kubernetes", "K8s", "Nginx",
-        "Git", "Maven", "Gradle", "Jenkins", "CI/CD",
-        "Vue", "React", "Node.js", "HTML", "CSS",
-        "Hadoop", "Spark", "Flink", "HBase", "Hive",
-        "LangChain", "RAG", "向量数据库", "Milvus", "pgvector", "FAISS",
-        "大模型", "LLM", "Prompt", "Agent",
-        "JVM", "JUC", "并发", "多线程", "锁", "事务", "MVCC", "索引",
-        "TCP/IP", "HTTP", "HTTPS", "RPC", "Netty",
-        "设计模式", "分布式", "微服务", "高并发", "高可用", "CAP", "BASE",
-        "RESTful", "GraphQL", "OAuth", "JWT",
-        "熟练", "熟悉", "了解", "掌握", "精通",
-    ]
-
-    def _is_short_title(s: str) -> bool:
-        return len(s) <= 60
-
-    def _looks_like_inline_tech_anchor(stripped: str) -> bool:
-        """项目内部的「技术栈：xxx / 技术栈-xxx / 技术栈 | xxx」式单行标注。"""
-        if not any(a in stripped for a in per_project_tech_anchors):
-            return False
-        # 含常见分隔符 → 说明是「锚点 + 内容」形式，不是段标题单独成行
-        return (
-            "：" in stripped or ":" in stripped
-            or "—" in stripped or "-" in stripped
-            or "|" in stripped or "｜" in stripped
-            or "·" in stripped  # 技术栈 · Java / MySQL
-        )
-
-    def _looks_like_pure_skill_bullets(stripped: str) -> bool:
-        """行内容基本是「技能散点」拼接 → 非项目内容，技能列表起点。"""
-        s = stripped
-        # 去掉常见分隔符与序号
-        compact = re.sub(r"^[\s\-•·\d\.\)、】]+", "", s)
-        if not compact:
-            return False
-        # 按常见分隔符切分，若每一段都能匹配到 skill keyword，判定为技能散点行
-        parts = re.split(r"[、,，/;；|·\s]+", compact)
-        parts = [p for p in parts if p]
-        if not parts:
-            return False
-        # 全部片段或高比例命中技能关键词（大小写不敏感，子串匹配）
-        hits = 0
-        for p in parts:
-            pl = p.lower()
-            if any(kw.lower() in pl for kw in skill_bullet_keywords):
-                hits += 1
-        # 只要命中比例高 且 没有「主谓结构」的长句，就认作技能散点
-        ratio = hits / max(len(parts), 1)
-        return (ratio >= 0.5 and hits >= 1) or (
-            ratio >= 0.35 and hits >= 3 and len(s) <= 120
-        )
-
-    def _is_stop_line(stripped: str, *, allow_inline_anchor: bool) -> bool:
-        if not stripped:
-            return False
-        short = _is_short_title(stripped)
-        # 项目开始词不算 stop
-        if any(m in stripped for m in project_start_markers):
-            return False
-        # ⭐ 关键修复：无论 allow_inline_anchor 是 True 还是 False，只要该行是
-        #   「技术栈：xxx / Tech Stack: xxx / 技术栈 | Java · MySQL」这种锚点+内容形式，
-        #   就**绝不**是 STOP 段标题（它是项目内部的收尾标注，必须保留）。
-        #   只有当「Tech Stack / 技术栈」作为**独立短标题**（没有冒号、|、· 等内容分隔符）
-        #   出现时，才视为新的技能段开始。
-        if _looks_like_inline_tech_anchor(stripped):
-            return False
-        if short and any(kw in stripped for kw in section_stop_keywords):
-            return True
-        return False
-
-    # ---------- 阶段 A：全局硬切（进入项目段后，一旦遇到段 STOP 标题，立即在该行之前 cut） ----------
-    global_cut_line = len(raw_lines)
-    entered_project = False
-    for i, line in enumerate(raw_lines):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if not entered_project:
-            if _is_short_title(stripped) and any(m in stripped for m in project_start_markers):
-                entered_project = True
-            continue
-        # 进入项目段之后：stop 标题 → 立即在该行上一刀切断（技能段本身不保留）
-        if _is_stop_line(stripped, allow_inline_anchor=True):
-            global_cut_line = i
-            break
-        # 遇到纯技能散点列表（一行里全是 Java/MySQL/Redis 这类散点关键词）也立刻停
-        if _looks_like_pure_skill_bullets(stripped):
-            # 技能段本身不保留
-            global_cut_line = i
-            break
-    trimmed_lines = raw_lines[:global_cut_line]
-
-    # ---------- 阶段 B：提取出项目段落（保留「最后一行技术栈：xxx」作为项目收尾） ----------
-    project_lines: list[str] = []
-    in_project_section = False
-
-    for line in trimmed_lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        if _is_short_title(stripped) and any(marker in stripped for marker in project_start_markers):
-            in_project_section = True
-            project_lines.append(stripped)
-            continue
-
-        if in_project_section and _is_stop_line(stripped, allow_inline_anchor=True):
-            in_project_section = False
-            continue
-
-        # 项目段内遇到纯技能散点 → 这一项不加入，并且出段（防止技术栈关键字列表泄漏）
-        if in_project_section and _looks_like_pure_skill_bullets(stripped):
-            # 如果上一行恰好是「技术栈：xxx」这种锚点，就保留它；技能散点本身跳过
-            # 并且立刻出段
-            in_project_section = False
-            continue
-
-        if in_project_section:
-            project_lines.append(stripped)
-
-    # ---------- 阶段 C：从尾往前做「按最后一行技术栈往下切 / 技能往上切」双保险 ----------
-    def _rtrim_projects(lines: list[str]) -> list[str]:
-        # 倒扫：
-        # 1) 遇到 STOP 短标题（含技能/技术栈单独成段）→ 直接切到该标题前
-        # 2) 遇到技能散点行（Java/MySQL/Redis…）→ 往上切掉，直到遇到一行主谓语或
-        #    「技术栈：xxx」锚点，锚点本身保留（即用户要求的「最后一行技术栈往下
-        #    切就切到这里为止」）
-        cut_at = len(lines)  # 默认不切
-        last_tech_anchor = -1
-        for j in range(len(lines) - 1, -1, -1):
-            ln = lines[j]
-            if not ln:
-                continue
-            # STOP 标题（不带冒号的那种单独标题）→ 直接在它之前截断
-            if _is_stop_line(ln, allow_inline_anchor=False):
-                cut_at = j
-                continue  # 再往前看有没有更紧的锚点（其实不需要了，已经整体 cut）
-            # 「技术栈：xxx」类单行锚点：项目收尾
-            if _looks_like_inline_tech_anchor(ln):
-                last_tech_anchor = j
-                break  # 保留到这条行为止（再往前就是项目正文了）
-            # 技能散点：在到达锚点之前遇到，继续往上抹
-            if _looks_like_pure_skill_bullets(ln):
-                cut_at = j  # 至少要切掉这行及以下（会被循环继续向前推）
-                continue
-            # 普通正文句：有主谓，不是散点 → 说明已经到项目内容区了，停止倒扫
-            # （若此前发现 cut_at 停在某技能散点，则最终 cut_at 为该值）
-            if len(ln) >= 6 and not _is_short_title(ln):
-                break
-        # 若发现了明确的「最后一行技术栈」，优先以它为最终收尾（+1 保留该行本身）
-        if last_tech_anchor >= 0:
-            final_end = last_tech_anchor + 1
-            if final_end < cut_at:
-                return lines[:final_end]
-        if cut_at < len(lines):
-            return lines[:cut_at]
-        return lines
-
-    project_lines = _rtrim_projects(project_lines)
-
-    # 再去掉尾部孤立的空行 / 空标题
-    def _strip_tail_whitespace(lines: list[str]) -> list[str]:
-        while lines and not lines[-1].strip():
-            lines.pop()
-        return lines
-
-    project_lines = _strip_tail_whitespace(project_lines)
-
-    # ---------- 阶段 D：长度太短时兜底（兜底前仍然保证「技能优势：往上一刀切」） ----------
-    if len(project_lines) < 4:
-        fallback_lines = [ln.strip() for ln in trimmed_lines if ln.strip()]
-        # 倒扫一次：技能 stop 标题或技能散点行 → 立刻往上切
-        last_safe = len(fallback_lines)
-        seen_content = False
-        for j in range(len(fallback_lines) - 1, -1, -1):
-            ln = fallback_lines[j]
-            if seen_content and (
-                _is_stop_line(ln, allow_inline_anchor=False)
-                or _looks_like_pure_skill_bullets(ln)
-            ):
-                last_safe = j
-                break
-            seen_content = True
-        fallback_lines = _rtrim_projects(fallback_lines[:last_safe])
-        fallback_lines = _strip_tail_whitespace(fallback_lines)
-        # 兜底仍然保留项目 start markers 之后的内容
-        fallback_src = "\n".join(fallback_lines)
-        result = fallback_src[:max_chars]
-    else:
-        result = "\n".join(project_lines)
-
-    if len(result) > max_chars:
-        result = result[:max_chars] + "...（截断）"
-
-    return result
-
-
-# ── 辅助函数 ──
-
 def _langchain_to_openai_messages(messages: list) -> list[dict]:
     """langchain 消息对象列表 → 标准 OpenAI 格式（bigmodel 不兼容 langchain 额外字段）"""
     result: list[dict] = []
@@ -708,3 +349,61 @@ def _call_llm(
     content = resp.choices[0].message.content or ""
     logger.info("LLM 调用完成: model=%s 耗时=%.1fs 输出=%d字符", state.get("model", ""), elapsed, len(content))
     return content
+
+
+def _extract_project_details(resume_text: str, max_chars: int = 2000) -> str:
+    """从简历原文中提取项目经历段落。
+
+    规则刻意极简：从首个项目段标题开始收集，到下一个非项目段标题为止。
+    - 段标题判定：短行（≤20字）且不含冒号 —— 正文叙述行天然不会误判；
+    - 找不到项目段标题 → 返回空串（绝不兜底拼姓名/联系方式等无关内容）。
+    """
+    if not resume_text:
+        return ""
+
+    raw_lines = resume_text.split("\n")
+
+    # 项目段落起点标记
+    project_start_markers = [
+        "项目", "工作经历", "项目经验", "工作经验", "工程经历",
+        "实习经历", "职业经历", "职业经验", "相关经历",
+        "PROJECT", "EXPERIENCE",
+    ]
+
+    # 非项目段标题关键词（短行出现 → 项目段结束）
+    non_project_sections = [
+        "教育", "技能", "优势", "评价", "证书", "资质",
+        "获奖", "奖项", "荣誉", "兴趣", "爱好",
+        "自我介绍", "语言能力", "作品集", "其他",
+        "References", "Skill", "Tech Stack",
+    ]
+
+    def _is_section_header(s: str) -> bool:
+        return len(s) <= 20 and "：" not in s and ":" not in s
+
+    start = None
+    for i, line in enumerate(raw_lines):
+        stripped = line.strip()
+        if not stripped or not _is_section_header(stripped):
+            continue
+        if any(m in stripped for m in project_start_markers):
+            start = i
+            break
+    if start is None:
+        return ""
+
+    out: list[str] = []
+    for stripped in (ln.strip() for ln in raw_lines[start:]):
+        if not stripped:
+            continue
+        if _is_section_header(stripped) and any(k in stripped for k in non_project_sections):
+            break
+        out.append(stripped)
+
+    result = "\n".join(out)
+    if len(result) > max_chars:
+        result = result[:max_chars] + "...（截断）"
+    return result
+
+
+# ── 辅助函数 ──

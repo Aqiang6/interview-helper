@@ -50,6 +50,30 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def _warmup_embedding_model_on_startup():
+    """后台线程预热 sentence-transformers 模型，避免用户第一次问问题时卡在 Loading weights
+    进度条上（第一次 ~80MB 权重加载会显示进度条，看起来像"向量化慢"）。
+    仅 QUIZ_EMBEDDING_BACKEND=sentence_transformers 时执行；OpenAI 后端无需预热。
+    预热在 daemon 线程里跑，不阻塞 FastAPI 启动；失败只打 warning，不影响服务可用性。
+    """
+    import threading
+    try:
+        from ai_interviewer.config import get_settings
+        s = get_settings()
+        if (s.quiz_embedding_backend or "sentence_transformers").lower() != "sentence_transformers":
+            return
+        def _warm():
+            try:
+                from ai_interviewer.quiz.ingest import warmup_embedding_model
+                warmup_embedding_model()
+            except Exception as e:
+                logger.warning("[startup] embedding 模型预热失败: %s", e)
+        threading.Thread(target=_warm, daemon=True, name="embedding-warmup").start()
+    except Exception as e:
+        logger.warning("[startup] embedding 预热钩子异常: %s", e)
+
+
 # ═══════════════════════════════════════════
 #  工具函数
 # ═══════════════════════════════════════════
@@ -207,7 +231,6 @@ async def api_start_interview(request: Request):
     model = data.get("model", "gpt-4o")
     resume_text = data.get("resume_text", "")
     candidate_name = data.get("candidate_name", "")
-    skills = data.get("skills", [])
     target_position = (data.get("target_position") or "").strip()
     custom_jd_name = (data.get("custom_jd_name") or "").strip()
     custom_jd_text = (data.get("custom_jd_text") or "").strip()
@@ -253,7 +276,6 @@ async def api_start_interview(request: Request):
         session_id=session_id,
         resume_text=resume_text,
         candidate_name=candidate_name,
-        skills=skills,
         target_position=target_position,
         jd_position_name=jd_position_name,
         jd_raw_text=jd_raw_text,
@@ -268,7 +290,6 @@ async def api_start_interview(request: Request):
             api_key=api_key,
             base_url=base_url,
             model=model,
-            skills=skills,
             jd_position_name=jd_position_name or "通用技术岗",
             jd_raw_text=jd_raw_text,
         )
@@ -589,6 +610,231 @@ async def api_quiz_answer(question_id: int):
         raise HTTPException(status_code=500, detail=f"取答案失败: {type(e).__name__}: {e}")
 
 
+# ═══════════════════════════════════════════
+#  AI 问答助手 API（基于 PostgreSQL 知识库 + LLM 综合回答）
+# ═══════════════════════════════════════════
+
+_QA_SYSTEM_PROMPT = """你是一个 AI 技术问答助手。用户会提出技术问题，你会拿到一组「知识库参考片段」，请综合这些片段与你的专业知识作答。
+
+## 回答要求
+1. 优先采用知识库片段中的准确内容，同时可自然融合你的专业知识补充完善。
+2. 回答使用 Markdown 格式，善用标题、列表、代码块、表格让结构清晰。
+3. 回答要准确、专业、有深度，适合面试准备与技术学习场景。
+4. **不要**在回答末尾自己列出参考题目或引用链接——参考例题会由系统在回答下方单独展示。
+
+## 知识库参考片段
+{context}
+"""
+
+
+def _filter_qa_items(items):
+    """尽量一个提问匹配一题：以最高相似度为锚，只保留与其分差 ≤0.05 的题（SQL 已卡绝对阈值 0.55）。"""
+    if not items:
+        return items
+    top1 = items[0].similarity or 0.0
+    return [it for it in items if (it.similarity or 0.0) >= top1 - 0.05][:3]
+
+
+def _build_qa_context(items) -> tuple[str, list[dict]]:
+    """把检索到的题目拼成给 LLM 的上下文文本，同时返回给前端的参考例题列表。"""
+    refs: list[dict] = []
+    parts: list[str] = []
+    for i, it in enumerate(items, 1):
+        parts.append(
+            f"【片段 {i}】\n"
+            f"主题: {it.big_topic} / {it.mid_topic}\n"
+            f"问题: {it.question}\n"
+            f"答案:\n{it.answer_md}"
+        )
+        refs.append({
+            "id": it.id,
+            "big_topic": it.big_topic,
+            "mid_topic": it.mid_topic,
+            "question": it.question,
+            "source_url": it.source_url,
+            "source_url_with_anchor": it.source_url_with_anchor,
+            "similarity": it.similarity,
+        })
+    return "\n\n---\n\n".join(parts), refs
+
+
+def _qa_llm_stream(*, api_key: str, base_url: str, model: str, question: str, context: str):
+    """同步流式调用 LLM，逐 delta 产出回答文本。失败直接抛错，不做降级。"""
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=120, max_retries=0)
+    system = _QA_SYSTEM_PROMPT.format(context=context or "（知识库未检索到相关内容）")
+    stream = client.chat.completions.create(
+        model=model,
+        temperature=0.3,
+        max_tokens=4096,
+        stream=True,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": question},
+        ],
+    )
+    produced = False
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content or ""
+        if delta:
+            produced = True
+            yield delta
+    if not produced:
+        raise RuntimeError("问答助手 LLM 返回空内容")
+
+
+@app.post("/api/qa/ask")
+async def api_qa_ask(request: Request):
+    """AI 问答助手：基于知识库语义检索 + LLM 综合回答。
+
+    body::
+
+        {
+          "question": "Redis 的 RDB 和 AOF 有什么区别？",
+          "api_key": "...",
+          "base_url": "https://api.openai.com/v1",
+          "model": "gpt-4o",
+          "top_k": 3,
+          "min_similarity": 0.3
+        }
+
+    返回::
+
+        {
+          "answer": "...(Markdown)...",
+          "references": [ {id, big_topic, mid_topic, question, source_url, source_url_with_anchor, similarity} ]
+        }
+    """
+    _quiz_available()
+    data = await request.json() or {}
+    question = (data.get("question") or "").strip()
+    api_key = (data.get("api_key") or "").strip()
+    base_url = (data.get("base_url") or "https://api.openai.com/v1").strip()
+    model = (data.get("model") or "gpt-4o").strip()
+    top_k_raw = data.get("top_k")
+    min_sim_raw = data.get("min_similarity")
+
+    if not question:
+        raise HTTPException(status_code=400, detail="问题不能为空")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请先在「面试助手 → 模型设置」中配置 API Key")
+
+    top_k = int(top_k_raw) if top_k_raw is not None and int(top_k_raw) > 0 else None
+    min_sim = float(min_sim_raw) if min_sim_raw is not None else None
+
+    # 1) 语义检索知识库
+    try:
+        from ai_interviewer.quiz import retriever
+        items = retriever.search_for_qa(
+            query=question,
+            count=top_k,
+            min_similarity=min_sim,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("问答助手检索失败")
+        raise HTTPException(status_code=500, detail=f"知识库检索失败: {type(e).__name__}: {e}")
+
+    items = _filter_qa_items(items)
+    context, refs = _build_qa_context(items)
+
+    # 2) LLM 综合回答（在线程池跑同步调用，避免阻塞 async event loop）
+    try:
+        gen = _qa_llm_stream(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            question=question,
+            context=context,
+        )
+        answer = await asyncio.to_thread(lambda: "".join(gen))
+    except Exception as e:
+        err_type = type(e).__name__
+        logger.exception("问答助手 LLM 调用失败")
+        raise HTTPException(status_code=500, detail=f"生成回答失败: [{err_type}] {e}")
+
+    return {"answer": answer, "references": refs}
+
+
+async def _qa_stream(question: str, api_key: str, base_url: str, model: str, top_k: int, min_sim):
+    """SSE 流式返回问答结果：先推 status 进度，LLM 真流式逐 delta 推 answer，流完最后推 references。"""
+    from ai_interviewer.quiz import retriever
+    from ai_interviewer.quiz.ingest import is_model_loaded
+
+    # 模型未加载时显示"加载模型"文案，避免文案不准——首次调用实际是模型加载（带 Loading
+    # weights 进度条），不是向量化本身慢。已加载（含预热完成）则显示"向量化问题"。
+    if is_model_loaded():
+        yield f"data: {json.dumps({'type': 'status', 'content': '正在向量化问题…'}, ensure_ascii=False)}\n\n"
+    else:
+        yield f"data: {json.dumps({'type': 'status', 'content': '正在加载 embedding 模型（首次较慢）…'}, ensure_ascii=False)}\n\n"
+    await asyncio.sleep(0)
+
+    items = retriever.search_for_qa(query=question, count=top_k, min_similarity=min_sim)
+
+    yield f"data: {json.dumps({'type': 'status', 'content': f'已检索到 {len(items)} 条相关内容，正在生成答案…'}, ensure_ascii=False)}\n\n"
+    await asyncio.sleep(0)
+
+    context, refs = _build_qa_context(items)
+
+    try:
+        gen = _qa_llm_stream(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            question=question,
+            context=context,
+        )
+        # 同步生成器放线程池逐块拉取，真实时产出
+        first_chunk = True
+        while True:
+            delta = await asyncio.to_thread(next, gen, None)
+            if delta is None:
+                break
+            if first_chunk:
+                # 首个 answer chunk 前推一个清空状态的信号
+                yield f"data: {json.dumps({'type': 'status', 'content': ''}, ensure_ascii=False)}\n\n"
+                first_chunk = False
+            yield f"data: {json.dumps({'type': 'answer', 'content': delta}, ensure_ascii=False)}\n\n"
+    except Exception as e:
+        logger.exception("问答助手流式 LLM 调用失败")
+        yield f"data: {json.dumps({'type': 'error', 'error': f'生成回答失败: {type(e).__name__}: {e}'}, ensure_ascii=False)}\n\n"
+        return
+
+    # 回答流式输出完毕后，最后带参考例题列表
+    yield f"data: {json.dumps({'type': 'references', 'references': refs}, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+
+
+@app.post("/api/qa/ask-stream")
+async def api_qa_ask_stream(request: Request):
+    """AI 问答助手（SSE 流式）。事件类型：references / answer / error / done。"""
+    _quiz_available()
+    data = await request.json() or {}
+    question = (data.get("question") or "").strip()
+    api_key = (data.get("api_key") or "").strip()
+    base_url = (data.get("base_url") or "https://api.openai.com/v1").strip()
+    model = (data.get("model") or "gpt-4o").strip()
+    top_k_raw = data.get("top_k")
+    min_sim_raw = data.get("min_similarity")
+
+    if not question:
+        raise HTTPException(status_code=400, detail="问题不能为空")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请先在「面试助手 → 模型设置」中配置 API Key")
+
+    top_k = int(top_k_raw) if top_k_raw is not None and int(top_k_raw) > 0 else None
+    min_sim = float(min_sim_raw) if min_sim_raw is not None else None
+
+    return StreamingResponse(
+        _qa_stream(question, api_key, base_url, model, top_k, min_sim),
+        media_type="text/event-stream",
+    )
+
+
 @app.get("/api/health")
 async def api_health():
     """健康检查"""
@@ -603,7 +849,6 @@ async def api_agent_state(session_id: str = "session_1"):
     if not state:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {
-        "candidate_profile": state.get("candidate_profile", {}),
         "interview_plan": state.get("interview_plan", {}),
         "current_topic": state.get("current_topic", ""),
         "question_count": state.get("question_count", 0),

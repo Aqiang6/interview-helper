@@ -503,7 +503,6 @@ def prioritize_by_jd(
     api_key: str,
     base_url: str,
     model: str,
-    skills: Iterable[str],
     jd_position_name: str = "",
     jd_raw_text: str = "",
     temperature: float = 0.05,
@@ -516,20 +515,15 @@ def prioritize_by_jd(
     """
     from ai_interviewer.jd_engine.jd_loader import PRIORITY_SYSTEM_PROMPT
 
-    skill_list = [s.strip() for s in skills if s and s.strip()]
-
     # ── 1. 尝试读 JD 缓存（预置 JD 首次生成后保存，后续秒读）──
     cached = _get_jd_cache(jd_raw_text)
     if cached is not None:
-        return _build_result_from_cache(skill_list, cached, jd_position_name)
+        return _build_result_from_cache(cached, jd_position_name)
     user_prompt = f"""## 目标岗位
 {jd_position_name or "未指定岗位"}
 
 ## 岗位 JD 原文
 {jd_raw_text or "(未提供 JD，按通用技术岗排序)"}
-
-## 候选人简历技能列表（仅参考：候选人会什么；话题本身必须来自 JD 原文，技能列表不是话题来源）
-{', '.join(skill_list) if skill_list else "(未提供，话题完全从 JD 原文提取)"}
 
 按规则输出结构化 JSON。"""
 
@@ -587,18 +581,8 @@ def prioritize_by_jd(
         logger.error(msg)
         raise RuntimeError(msg) from e
 
-    # 建立 标准名 → 简历原始名 映射（LLM 返回 ordered_topics 是标准名，要回造 aliases）
-    aliases: list[tuple[str, str]] = []
-    lower_to_original = {s.lower(): s for s in skill_list}
-    for canon in ordered_topics:
-        orig = lower_to_original.get(canon.lower(), canon)
-        # 模糊：canon 是 orig 子串 / 反
-        if orig == canon:
-            for orig_s in skill_list:
-                if canon.lower() in orig_s.lower() or orig_s.lower() in canon.lower():
-                    orig = orig_s
-                    break
-        aliases.append((orig, canon))
+    # LLM 返回的 ordered_topics 即标准话题名，无简历技能可回映射，别名取自身
+    aliases = [(t, t) for t in ordered_topics]
 
     # max_q 合法范围夹取（LLM 乱给数字时的兜底，不是规则降级）
     max_q = max(8, min(25, int(max_q)))
@@ -610,6 +594,7 @@ def prioritize_by_jd(
 
     # ── 保存 JD 缓存（下次同 JD 秒读）──
     _save_jd_cache(jd_raw_text, {
+        "ordered_topics": ordered_topics,
         "skill_importance": importance,
         "suggested_max_questions": max_q,
         "topics_per_skill": topics_per_skill,
@@ -629,25 +614,6 @@ def prioritize_by_jd(
 
 _JD_CACHE_DIR = Path(__file__).resolve().parent.parent / ".jd_cache"
 
-# 话题名后缀词（归一化用：'RAG技术'/'RAG系统'/'RAG实践' → 'RAG'）
-_TOPIC_SUFFIXES = (
-    "架构", "原理", "系统", "技术", "实践", "基础", "能力", "框架", "工具",
-    "经验", "设计", "开发", "应用", "相关", "语言", "协议", "编排", "协作",
-)
-
-
-def _topic_core(topic: str) -> str:
-    """剥离话题名尾部修饰词，取核心词（'RAG技术'→'rag'），用于宽松匹配。"""
-    t = topic.strip().lower()
-    changed = True
-    while changed and t:
-        changed = False
-        for suf in _TOPIC_SUFFIXES:
-            if t.endswith(suf) and len(t) - len(suf) >= 2:
-                t = t[: -len(suf)]
-                changed = True
-    return t
-
 
 def _jd_cache_path(jd_raw_text: str) -> Path:
     h = hashlib.sha256(jd_raw_text.strip().encode("utf-8")).hexdigest()[:16]
@@ -663,6 +629,8 @@ def _get_jd_cache(jd_raw_text: str) -> dict | None:
         return None
     try:
         data = _json.loads(p.read_text(encoding="utf-8"))
+        if not data.get("ordered_topics"):
+            return None
         logger.info("JD 缓存命中，跳过 LLM 排序调用")
         return data
     except Exception as e:
@@ -683,40 +651,12 @@ def _save_jd_cache(jd_raw_text: str, data: dict) -> None:
         logger.warning("JD 缓存保存失败: %s", e)
 
 
-def _build_result_from_cache(skill_list: list[str], cache: dict, jd_position_name: str) -> JDPriorityResult:
-    """用缓存的 skill_importance + 候选人 skills 排序，构建 JDPriorityResult
-
-    匹配策略（宽松归一化）：
-    1. 精确命中
-    2. 互为子串（'Redis' ↔ 'Redis缓存'）
-    3. 核心词互为子串（'RAG技术' ↔ 'RAG系统' → core 'rag'）
-    """
+def _build_result_from_cache(cache: dict, jd_position_name: str) -> JDPriorityResult:
+    """用缓存直接重建 JDPriorityResult（ordered_topics 已由 LLM 算好存入缓存）"""
     importance = cache.get("skill_importance", {})
     max_q = int(cache.get("suggested_max_questions", 15) or 15)
     topics_per_skill = cache.get("topics_per_skill", {"required": 4, "preferred": 3, "bonus": 2})
-
-    imp_values = {"required", "preferred", "bonus"}
-    cores = {k: _topic_core(k) for k in importance}
-
-    def _get_imp(skill: str) -> str:
-        imp = importance.get(skill)
-        if imp in imp_values:
-            return imp
-        sl = skill.lower()
-        sk_core = _topic_core(sl)
-        for k, v in importance.items():
-            if v not in imp_values:
-                continue
-            kl = k.lower()
-            if kl in sl or sl in kl:
-                return v
-            kc = cores.get(k, "")
-            if kc and sk_core and (kc in sk_core or sk_core in kc):
-                return v
-        return "preferred"
-
-    rank_map = {"required": 0, "preferred": 1, "bonus": 2}
-    ordered_topics = sorted(skill_list, key=lambda s: rank_map.get(_get_imp(s), 1))
+    ordered_topics = [str(t).strip() for t in cache.get("ordered_topics", []) if str(t).strip()]
     aliases = [(t, t) for t in ordered_topics]
 
     logger.info("JD 缓存排序: position=%s topics=%s", jd_position_name, ordered_topics[:10])

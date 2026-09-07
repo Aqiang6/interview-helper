@@ -379,7 +379,7 @@ a:hover { text-decoration: underline; }
 }
 
 /* ---------- Content (right column) ---------- */
-.content { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-8); }
+.content { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-4); }
 
 .page-head h1 {
     margin: 0 0 var(--sp-2);
@@ -405,7 +405,7 @@ a:hover { text-decoration: underline; }
     position: relative;
     gap: 2px;
 }
-.seg button {
+.seg button:not(.btn) {
     appearance: none; border: 0; background: transparent; cursor: pointer;
     padding: 6px 14px; font-size: var(--fs-sm); color: var(--text-2);
     border-radius: var(--r-pill);
@@ -414,8 +414,8 @@ a:hover { text-decoration: underline; }
     display: inline-flex; align-items: center; gap: 6px;
     letter-spacing: 0.01em;
 }
-.seg button:hover { color: var(--text); }
-.seg button[aria-pressed="true"] { color: var(--text); font-weight: var(--fw-semibold); }
+.seg button:not(.btn):hover { color: var(--text); background: var(--bg-elev); }
+.seg button:not(.btn)[aria-pressed="true"] { color: #fff; font-weight: var(--fw-semibold); background: var(--accent); }
 .seg__indicator {
     position: absolute;
     top: 3px; bottom: 3px;
@@ -901,10 +901,7 @@ a:hover { text-decoration: underline; }
     max-height: min(60vh, 640px);
     overflow-y: auto;
     padding: var(--sp-6) var(--sp-8);
-    background:
-        radial-gradient(1200px 400px at 0% 0%, rgba(10,132,255,0.06), transparent 60%),
-        radial-gradient(1000px 420px at 100% 100%, rgba(175,82,222,0.05), transparent 55%),
-        var(--bg);
+    background: var(--bg);
     display: flex;
     flex-direction: column;
     gap: var(--sp-5);
@@ -949,7 +946,19 @@ a:hover { text-decoration: underline; }
     letter-spacing: 0.02em;
 }
 .chat-avatar--me {
-    background: linear-gradient(135deg, var(--accent) 0%, #9b5cff 100%);
+    background: linear-gradient(135deg, #e8e8ed 0%, #d4d4d9 100%);
+    box-shadow: var(--shadow-xs), inset 0 0 0 0.5px rgba(0,0,0,0.06);
+    color: transparent;
+    position: relative;
+}
+.chat-avatar--me::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 22px; height: 22px;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%239a9aa0'><circle cx='12' cy='8' r='4'/><path d='M4 20c0-4 3.6-7 8-7s8 3 8 7z'/></svg>");
+    background-size: contain; background-repeat: no-repeat; background-position: center;
 }
 
 .chat-col {
@@ -1003,24 +1012,45 @@ a:hover { text-decoration: underline; }
     display: flex;
     gap: var(--sp-3);
     align-items: flex-end;
-    padding: var(--sp-4) var(--sp-6) var(--sp-5);
+    padding: var(--sp-3) var(--sp-4);
     border-top: 0.5px solid var(--border);
     background: var(--bg-elev);
 }
-.chat-sendbar :deep(.el-textarea__inner),
-.chat-sendbar .el-textarea__inner,
-.chat-sendbar textarea {
-    border-radius: 18px !important;
-    padding: 10px 14px !important;
+.chat-sendbar .qa-textarea {
+    flex: 1;
+    box-sizing: border-box;
+    border-radius: 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    background: #fff;
+    font-size: var(--fs-base);
+    line-height: 24px;
+    font-family: inherit;
+    resize: none;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
+    outline: none;
+    min-height: 40px;
+    max-height: 140px;
+    overflow-y: auto;
+}
+.chat-sendbar .qa-textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.12), 0 1px 3px rgba(0,0,0,0.04);
+}
+.chat-sendbar .qa-textarea::placeholder { color: var(--text-3); }
+.chat-sendbar .btn--primary {
+    box-sizing: border-box;
+    height: 40px;
+    min-width: 60px;
+    border-radius: 12px;
+    font-size: var(--fs-sm);
 }
 
 /* ---------- Step 4 done (Q2): 再来一次 only ---------- */
 .interview-step--done {
     padding: var(--sp-10) var(--sp-8);
-    background:
-        radial-gradient(900px 360px at 100% 0%, rgba(10,132,255,0.07), transparent 60%),
-        radial-gradient(800px 400px at 0% 100%, rgba(175,82,222,0.06), transparent 55%),
-        var(--bg-elev);
+    background: var(--bg-elev);
 }
 .interview-done__hero {
     text-align: center;
@@ -1290,8 +1320,7 @@ a:hover { text-decoration: underline; }
 
 /* ---------- Focus head + Focus card (Q6) ---------- */
 .focus-head {
-    position: sticky;
-    top: calc(var(--nav-h, 56px) + var(--sp-4));
+    position: relative;
     z-index: 5;
     display: flex;
     align-items: center;
@@ -1299,8 +1328,6 @@ a:hover { text-decoration: underline; }
     gap: var(--sp-4);
     flex-wrap: wrap;
     padding: var(--sp-3) var(--sp-5);
-    backdrop-filter: saturate(180%) blur(16px);
-    -webkit-backdrop-filter: saturate(180%) blur(16px);
 }
 .focus-head__progress {
     flex: 1 1 260px;
