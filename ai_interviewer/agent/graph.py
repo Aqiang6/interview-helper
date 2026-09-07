@@ -29,7 +29,7 @@ from ai_interviewer.agent.nodes import (
     next_topic,
     plan_interview,
 )
-from ai_interviewer.agent.state import CandidateProfile, InterviewState
+from ai_interviewer.agent.state import InterviewState
 from ai_interviewer.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,6 @@ class InterviewGraphAgent:
         session_id: str,
         resume_text: str,
         candidate_name: str = "",
-        skills: list[str] | None = None,
         *,
         target_position: str = "",
         jd_position_name: str = "",
@@ -150,20 +149,12 @@ class InterviewGraphAgent:
             "resume_text": resume_text,
             "resume_projects": resume_projects,
             "candidate_name": candidate_name,
-            "skills": skills or [],
-            "candidate_profile": {
-                "name": candidate_name,
-                "skills": skills or [],
-                "answered_topics": [],
-                "difficulty_level": "mid",
-            },
             "interview_plan": {},
             "question_count": 0,
             "max_questions": 15,
             "current_topic": "",
             "is_finished": False,
             "last_tool_result": "",
-            "answer_analysis": "",
             "custom_prompt": custom_prompt,
             "api_key": self._api_key,
             "base_url": self._base_url,
@@ -263,7 +254,6 @@ class InterviewGraphAgent:
         except (json.JSONDecodeError, TypeError):
             return {
                 "conversation": [],
-                "answered_topics": [],
                 "question_count": 0,
                 "comment": "评估生成失败",
             }

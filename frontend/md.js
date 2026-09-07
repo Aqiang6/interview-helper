@@ -85,6 +85,7 @@
         const lines = text.split('\n');
         let html = '';
         let i = 0;
+        let p = [];
         const flushParagraph = (buf) => {
             if (!buf.length) return;
             html += '<p>' + formatInline(escapeHtml(buf.join('\n')), true) + '</p>';

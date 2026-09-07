@@ -82,7 +82,7 @@ class AppSettings(BaseSettings):
         default=384,
         description="向量维度：all-MiniLM-L6-v2=384 / paraphrase-multilingual-MiniLM-L12-v2=384 / text-embedding-3-small 默认 1536；schema 首次初始化时生效",
     )
-    quiz_top_k: int = Field(default=10, ge=1, le=200, description="自定义主题向量检索返回题数")
+    quiz_top_k: int = Field(default=3, ge=1, le=200, description="自定义主题向量检索返回题数")
     quiz_min_similarity: float = Field(
         default=0.3, ge=0.0, le=1.0, description="自定义主题向量检索最低相似度（余弦），低于阈值的题会被过滤"
     )

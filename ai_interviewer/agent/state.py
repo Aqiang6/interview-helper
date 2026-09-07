@@ -1,9 +1,9 @@
 """Agent 状态定义 - LangGraph 的 TypedDict State
 
 管理面试全流程的状态，包括：
-- Memory：短期记忆（对话历史）+ 长期记忆（候选人画像）
+- Memory：对话历史（唯一进 LLM 上下文的记忆载体）
 - Planning：面试计划（话题列表 + 当前阶段）
-- Context：RAG 检索结果、简历摘要
+- Context：简历信息、JD、面试进度
 """
 
 from __future__ import annotations
@@ -11,19 +11,6 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from langchain_core.messages import BaseMessage
-
-
-class CandidateProfile(TypedDict, total=False):
-    """候选人画像 - 长期记忆（Long-term Memory）
-
-    在面试过程中持续更新。已移除评分机制（skill_scores/strengths/weaknesses），
-    仅保留已回答话题记录和定性分析笔记，用于指导后续提问方向。
-    """
-    name: str
-    skills: list[str]
-    answered_topics: list[str]            # 已问答过的话题
-    difficulty_level: str                 # "junior" | "mid" | "senior"
-    overall_impression: str               # 整体印象
 
 
 class InterviewPlan(TypedDict, total=False):
@@ -50,11 +37,8 @@ class InterviewState(TypedDict):
 
     贯穿整个面试流程，所有节点共享读写。
     """
-    # ── Memory：短期记忆 ──
+    # ── Memory ──
     messages: list[BaseMessage]           # 完整对话历史
-
-    # ── Memory：长期记忆 ──
-    candidate_profile: CandidateProfile    # 候选人画像
 
     # ── Planning ──
     interview_plan: InterviewPlan          # 面试计划
@@ -63,7 +47,6 @@ class InterviewState(TypedDict):
     resume_text: str                       # 简历原文（用于项目追问参考）
     resume_projects: str                   # 项目段落（用户可编辑裁剪，注入 {resume_projects}）
     candidate_name: str
-    skills: list[str]                       # 候选人技能列表
 
     # ── 目标岗位（JD 驱动新增） ──
     target_position: str                    # 前端选的 position_id 或岗位名
@@ -83,9 +66,6 @@ class InterviewState(TypedDict):
     api_key: str
     base_url: str
     model: str
-
-    # ── 回答定性分析（替代原评分机制） ──
-    answer_analysis: str                  # 最近一次回答的定性分析（指导下一题方向）
 
     # ── 自定义面试指令 ──
     custom_prompt: str                     # 用户"再来一次"时填写的定向调整需求

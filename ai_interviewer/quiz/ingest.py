@@ -238,6 +238,33 @@ def _text_for_embedding(c: QuestionChunk) -> str:
     return f"{c.big_topic}｜{c.mid_topic}｜{c.question}"
 
 
+def is_model_loaded() -> bool:
+    """检测 sentence_transformers 模型是否已加载到内存（_MODEL_CACHE 命中）。
+
+    用途：QA 流程据此决定显示"正在加载 embedding 模型（首次较慢）…"还是"正在向量化问题…"，
+    避免文案不准——首次调用 embed_query 时实际是模型加载（带 Loading weights 进度条），
+    而不是向量化本身慢。OpenAI 后端无需加载，恒返回 True。
+    """
+    s = get_settings()
+    backend = (s.quiz_embedding_backend or "sentence_transformers").lower()
+    if backend != "sentence_transformers":
+        return True
+    key = (s.quiz_sentence_transformer_model, str(s.quiz_embedding_dimensions))
+    return key in SentenceTransformerEmbedder._MODEL_CACHE
+
+
+def warmup_embedding_model() -> None:
+    """同步触发模型预加载到 _MODEL_CACHE。可在服务启动时后台线程调用，让首次真实检索绕开
+    Loading weights 阶段。预热失败不抛错——首次真实调用时若仍失败会按硬约束直接报错。
+    """
+    try:
+        emb = _build_embeddings()
+        emb.embed_query("warmup")
+        logger.info("[quiz.ingest] embedding 模型预热完成")
+    except Exception as e:
+        logger.warning("[quiz.ingest] embedding 模型预热失败（不影响启动，首次调用时会重试）: %s", e)
+
+
 # ═══════════════════════════════════════════
 #  核心入库逻辑
 # ═══════════════════════════════════════════
