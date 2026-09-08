@@ -522,6 +522,7 @@ a:hover { text-decoration: underline; }
 .btn--ghost:hover { background: var(--accent-soft); }
 
 .btn--lg { padding: 12px 22px; font-size: var(--fs-md); }
+.btn--sm { padding: 5px 12px; font-size: var(--fs-xs); border-radius: 10px; }
 .btn--icon { padding: 8px; border-radius: 12px; }
 
 /* ---------- Inputs & textarea ---------- */
@@ -834,9 +835,6 @@ a:hover { text-decoration: underline; }
 .interview-step--chat {
     padding: 0;
     overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    min-height: min(80vh, 760px);
     border-radius: var(--r-2xl);
 }
 .chat-header {
@@ -1226,6 +1224,20 @@ a:hover { text-decoration: underline; }
     background: rgba(255,255,255,0.22);
     color: #fff;
 }
+/* QA「试试」chip：中题目标签 + 题目文本 */
+.chip__tag {
+    color: var(--accent);
+    font-size: calc(var(--fs-xs) - 1px);
+    font-weight: 600;
+    opacity: 0.85;
+    white-space: nowrap;
+}
+.chip__text {
+    color: var(--text-2);
+    white-space: nowrap;
+}
+.chip:hover .chip__tag { opacity: 1; }
+.chip:hover .chip__text { color: var(--text); }
 
 /* ---------- Control-card & grid (Q4/Q5) ---------- */
 .seg--xs { padding: 2px; }

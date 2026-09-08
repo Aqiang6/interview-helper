@@ -13,7 +13,7 @@
     <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%230071e3'/><text x='16' y='22' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,&quot;SF Pro Display&quot;,sans-serif' font-size='19' font-weight='700' fill='white'>I</text></svg>" />
 
     <!-- Apple-flavored design tokens -->
-    <link rel="stylesheet" href="/static/styles.apple.css?v=10" />
+    <link rel="stylesheet" href="/static/styles.apple.css?v=19" />
     <!-- Vue 3 + Element Plus (legacy interview flow still depends on them)
          NOTE: intentionally NOT `defer` because the inline <script> at the end of
          <body> references `Vue` / `ElementPlus` synchronously. Deferring these
@@ -454,8 +454,10 @@
             outline: none;
             min-height: 40px;
             max-height: 140px;
-            overflow-y: auto;
+            overflow-y: hidden;
+            scrollbar-width: none;
         }
+        .qa-textarea::-webkit-scrollbar { display: none; }
         .qa-textarea:focus {
             border-color: var(--accent);
             box-shadow: 0 0 0 3px rgba(0,113,227,0.12), 0 1px 3px rgba(0,0,0,0.04);
@@ -468,6 +470,25 @@
             border-radius: 12px;
             font-size: var(--fs-sm);
         }
+        .iv-actions-row {
+            display: flex; gap: var(--sp-2); justify-content: flex-end;
+            padding: var(--sp-2) var(--sp-4) 0;
+            background: #fff;
+        }
+        .iv-bubble {
+            font-size: var(--fs-base);
+            font-weight: var(--fw-regular);
+            color: #fff;
+            line-height: 1.6;
+            display: inline-block;
+            margin-right: auto;
+            padding: var(--sp-2) var(--sp-4);
+            background: #00875A;
+            border-radius: var(--r-lg);
+            max-width: 85%;
+            -webkit-font-smoothing: antialiased;
+        }
+        .iv-bubble--typing { padding: 10px 16px; }
 
         /* ---------- 刷题助手：下方区域与 Hero 衔接 ---------- */
         /* seg + 控制卡合并为一个 box */
@@ -638,7 +659,8 @@
                             </div>
                             <div v-else>
                                 <p style="color: var(--text-3); font-size: var(--fs-sm); margin-bottom: var(--space-md);">点击下方任一简历即可选用，再选择下方岗位即可开始面试</p>
-                                <div v-for="r in savedResumes" :key="r.hash" @click="selectSavedResume(r.hash)" style="border: 0.5px solid var(--border); border-radius: var(--r-xl); padding: var(--space-4); margin-bottom: var(--space-3); cursor: pointer; transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);">
+                                <div v-for="r in savedResumes" :key="r.hash" @click="selectSavedResume(r.hash)" style="border: 0.5px solid var(--border); border-radius: var(--r-xl); padding: var(--space-4); margin-bottom: var(--space-3); cursor: pointer; transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-2) var(--ease-out); position: relative;">
+                                    <button type="button" @click.stop="deleteSavedResume(r.hash)" style="position: absolute; top: var(--space-2); right: var(--space-2); border: none; background: transparent; cursor: pointer; color: var(--text-3); font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: var(--r-sm);" title="删除">&times;</button>
                                     <div style="display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1);">
                                         <span style="font-weight: var(--fw-semibold); font-size: var(--fs-md); color: var(--text);">{{ r.name || '未命名简历' }}</span>
                                     </div>
@@ -740,66 +762,39 @@
 
                 <!-- 步骤 3: 面试对话（气泡式 iMessage 风格） -->
                 <div class="card interview-step interview-step--chat" v-if="interviewStep === 3">
-                    <div class="chat-header">
-                        <div class="chat-header__left">
-                            <div class="chat-avatar chat-avatar--interviewer" title="面试官">AI</div>
-                            <div>
-                                <div class="chat-header__name">AI 面试官
-                                    <template v-if="currentPositionName()">
-                                        <span class="chat-header__badge">面 · {{ currentPositionName() }}</span>
+                    <div class="qa-box">
+                        <div class="iv-actions-row">
+                            <button v-if="!finished" type="button" class="btn btn--ghost btn--sm" @click="finishInterview">结束本轮</button>
+                            <button type="button" class="btn btn--ghost btn--sm" @click="resetInterviewFlow">重新开始</button>
+                        </div>
+                        <div class="qa-scroll" ref="chatContainer">
+                            <template v-for="(msg, index) in chatMessages" :key="index">
+                                <div :class="['qa-msg', msg.role === 'candidate' ? 'qa-msg--user' : 'qa-msg--ai']">
+                                    <div v-if="msg.role === 'candidate'" class="qa-msg__q">{{ msg.content }}</div>
+                                    <template v-else>
+                                        <div v-if="msg.content" class="iv-bubble">{{ msg.content }}</div>
+                                        <div v-else class="iv-bubble iv-bubble--typing">
+                                            <span class="chat-dots"><i></i><i></i><i></i></span>
+                                        </div>
                                     </template>
                                 </div>
-                                <div class="chat-header__status">
-                                    <span class="dot" :class="streaming || interviewerStatus === 'typing' ? 'orange' : 'green'"></span>
-                                    {{ (streaming || interviewerStatus === 'typing') ? (loadingStatus || '面试官正在输入…') : '在线，随时回复' }}
-                                </div>
-                            </div>
+                            </template>
                         </div>
-                        <div class="chat-header__right">
-                            <el-button type="success" size="default" @click="finishInterview" v-if="!finished">结束本轮</el-button>
-                            <el-button size="default" @click="resetInterviewFlow">重新开始</el-button>
+
+                        <div class="qa-sendbar">
+                            <textarea
+                                v-model="userAnswer"
+                                class="qa-textarea"
+                                rows="1"
+                                placeholder="输入你的回答…"
+                                @input="autoResizeTextarea"
+                                @keydown.enter.exact.prevent="sendAnswer"
+                                :disabled="finished || streaming"></textarea>
+                            <button type="button" class="btn btn--primary" @click="sendAnswer" :disabled="finished || streaming || !userAnswer.trim()">
+                                <span v-if="streaming">思考中…</span>
+                                <span v-else>发送</span>
+                            </button>
                         </div>
-                    </div>
-
-                    <div class="chat-wrap" ref="chatContainer">
-                        <template v-for="(msg, index) in chatMessages" :key="index">
-                            <div :class="['chat-line', msg.role === 'interviewer' ? 'is-interviewer' : 'is-me']">
-                                <div v-if="msg.role === 'interviewer'" class="chat-avatar chat-avatar--interviewer" title="面试官">AI</div>
-                                <div class="chat-col">
-                                    <div class="chat-meta">
-                                        <span>{{ msg.role === 'interviewer' ? '面试官' : '我' }}</span>
-                                        <time>{{ msg._time || '' }}</time>
-                                    </div>
-                                    <div class="chat-bubble">{{ msg.content }}</div>
-                                </div>
-                                <div v-if="msg.role === 'candidate'" class="chat-avatar chat-avatar--me" title="你"></div>
-                            </div>
-                        </template>
-
-                        <div v-if="interviewerStatus === 'typing'" class="chat-line is-interviewer">
-                            <div class="chat-avatar chat-avatar--interviewer" title="面试官">AI</div>
-                            <div class="chat-col">
-                                <div class="chat-meta"><span>面试官</span><time>正在输入…</time></div>
-                                <div class="chat-bubble chat-bubble--typing">
-                                    <span class="chat-dots"><i></i><i></i><i></i></span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="chat-sendbar">
-                        <textarea
-                            v-model="userAnswer"
-                            class="qa-textarea"
-                            rows="1"
-                            placeholder="输入你的回答…"
-                            @input="autoResizeTextarea"
-                            @keydown.enter.exact.prevent="sendAnswer"
-                            :disabled="finished || streaming"></textarea>
-                        <button type="button" class="btn btn--primary" @click="sendAnswer" :disabled="finished || streaming || !userAnswer.trim()">
-                            <span v-if="streaming">思考中…</span>
-                            <span v-else>发送</span>
-                        </button>
                     </div>
                 </div>
 
@@ -856,15 +851,15 @@
                             </button>
                         </div>
                         <div class="quiz-hero__chiprow">
-                            <span class="chip chip--ghost" style="pointer-events:none;">试试这些题：</span>
+                            <span class="chip chip--ghost" style="pointer-events:none;">试试这些章节：</span>
                             <button
-                                v-for="(q, i) in quickQuestions"
-                                :key="q.id || i"
+                                v-for="(m, i) in quickMidTopics"
+                                :key="m.big_topic + '|' + m.mid_topic"
                                 class="chip"
                                 type="button"
-                                @click="startQuickQuestion(q)"
+                                @click="startQuickMidTopic(m)"
                                 :disabled="questionsLoading">
-                                {{ truncate(q.question, 18) }}
+                                {{ truncate(m.mid_topic, 14) }}
                             </button>
                         </div>
                     </div>
@@ -1131,12 +1126,13 @@
                         <div class="qa-hero__chips">
                             <span class="chip chip--ghost" style="pointer-events:none;">试试：</span>
                             <button
-                                v-for="ex in qaExamples"
-                                :key="ex"
+                                v-for="(ex, i) in qaExamples"
+                                :key="i"
                                 class="chip"
                                 type="button"
-                                @click="qaInput = ex">
-                                {{ ex }}
+                                @click="qaInput = ex.question">
+                                <span class="chip__tag">{{ ex.mid_topic }}</span>
+                                <span class="chip__text">{{ truncate(ex.question, 16) }}</span>
                             </button>
                         </div>
                     </div>
@@ -1458,6 +1454,19 @@ function main() {
                     ElMessage.error('读取简历失败：' + e.message);
                 } finally { state.loading = false; }
             }
+            async function deleteSavedResume(hash) {
+                try {
+                    const res = await fetch('/api/resumes/' + hash, { method: 'DELETE' });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || '删除失败');
+                    }
+                    state.savedResumes = state.savedResumes.filter(r => r.hash !== hash);
+                    ElMessage.success('已删除');
+                } catch (e) {
+                    ElMessage.error('删除简历失败：' + e.message);
+                }
+            }
             function handlePdfUpload(file) {
                 const reader = new FileReader();
                 reader.onload = (e) => {
@@ -1562,8 +1571,11 @@ function main() {
             async function getFirstQuestion() {
                 state.streaming = true;
                 state.interviewerStatus = 'typing';
+                const aiMsg = reactive({ role: 'interviewer', content: '', streaming: true, _time: _nowClock() });
+                state.chatMessages.push(aiMsg);
+                nextTick(scrollToBottom);
                 try {
-                    const res = await fetch('/api/first-question', {
+                    const res = await fetch('/api/first-question-stream', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ session_id: 'session_1' }),
@@ -1572,14 +1584,45 @@ function main() {
                         const err = await res.json().catch(() => ({}));
                         throw new Error(err.detail || `请求失败: ${res.status}`);
                     }
-                    const data = await res.json();
-                    state.chatMessages.push({ role: 'interviewer', content: data.response, _time: _nowClock() });
-                    nextTick(scrollToBottom);
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buf = '';
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buf += decoder.decode(value, { stream: true });
+                        let idx;
+                        while ((idx = buf.indexOf('\n\n')) !== -1) {
+                            const frame = buf.slice(0, idx).trim();
+                            buf = buf.slice(idx + 2);
+                            if (!frame.startsWith('data:')) continue;
+                            let payload;
+                            try { payload = JSON.parse(frame.slice(5).trim()); }
+                            catch (_) { continue; }
+                            if (payload.type === 'answer') {
+                                aiMsg.content += payload.content || '';
+                                nextTick(scrollToBottom);
+                            } else if (payload.type === 'error') {
+                                aiMsg.content = '⚠️ ' + (payload.error || '生成失败');
+                                aiMsg.streaming = false;
+                            } else if (payload.type === 'done') {
+                                aiMsg.streaming = false;
+                                if (payload.finished) {
+                                    state.finished = true;
+                                    nextTick(() => { finishInterview(); });
+                                }
+                            }
+                        }
+                    }
                 } catch (e) {
+                    aiMsg.content = '⚠️ 获取问题失败：' + e.message;
+                    aiMsg.streaming = false;
                     ElMessage.error('获取问题失败：' + e.message);
                 } finally {
+                    aiMsg.streaming = false;
                     state.streaming = false;
                     state.interviewerStatus = 'idle';
+                    nextTick(scrollToBottom);
                 }
             }
             function _nowClock() {
@@ -1598,8 +1641,11 @@ function main() {
                 state.streaming = true;
                 state.interviewerStatus = 'typing';
                 nextTick(scrollToBottom);
+                const aiMsg = reactive({ role: 'interviewer', content: '', streaming: true, _time: _nowClock() });
+                state.chatMessages.push(aiMsg);
+                nextTick(scrollToBottom);
                 try {
-                    const res = await fetch('/api/chat', {
+                    const res = await fetch('/api/chat-stream', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ session_id: 'session_1', answer: answer }),
@@ -1608,16 +1654,46 @@ function main() {
                         const err = await res.json().catch(() => ({}));
                         throw new Error(err.detail || `请求失败: ${res.status}`);
                     }
-                    const d = await res.json();
-                    state.chatMessages.push({ role: 'interviewer', content: d.response, _time: _nowClock() });
-                    state.finished = !!d.finished;
-                    if (state.finished) finishInterview();
-                } catch (e) { ElMessage.error('发送失败：' + e.message); }
-                finally {
+                    const reader = res.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buf = '';
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buf += decoder.decode(value, { stream: true });
+                        let idx;
+                        while ((idx = buf.indexOf('\n\n')) !== -1) {
+                            const frame = buf.slice(0, idx).trim();
+                            buf = buf.slice(idx + 2);
+                            if (!frame.startsWith('data:')) continue;
+                            let payload;
+                            try { payload = JSON.parse(frame.slice(5).trim()); }
+                            catch (_) { continue; }
+                            if (payload.type === 'answer') {
+                                aiMsg.content += payload.content || '';
+                                nextTick(scrollToBottom);
+                            } else if (payload.type === 'error') {
+                                aiMsg.content = '⚠️ ' + (payload.error || '生成失败');
+                                aiMsg.streaming = false;
+                            } else if (payload.type === 'done') {
+                                aiMsg.streaming = false;
+                                if (payload.finished) {
+                                    state.finished = true;
+                                    nextTick(() => { finishInterview(); });
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    aiMsg.content = '⚠️ 发送失败：' + e.message;
+                    aiMsg.streaming = false;
+                    ElMessage.error('发送失败：' + e.message);
+                } finally {
+                    aiMsg.streaming = false;
                     state.streaming = false;
                     state.interviewerStatus = 'idle';
+                    nextTick(scrollToBottom);
                 }
-                nextTick(scrollToBottom);
             }
             const chatContainer = ref(null);
             function scrollToBottom() {
@@ -1779,41 +1855,37 @@ function main() {
                 return found ? (found.mid_topics || []) : [];
             });
 
-            // Hero 顶部「试试这些题」chip 行：从题库随机抽 6 道（含 question+big_topic+mid_topic+id），
-            // 点击 chip 直接进入 focus mode 练这道题。每次切到 quiz tab 重新抽一批。
-            const quickQuestions = ref([]);
-            async function loadQuickQuestions() {
-                // topics 没加载完就不抽，避免与 loadTopics 抢连接
+            // Hero 顶部「试试这些章节」chip 行：从主题树里随机挑 6 个中题目（章节），
+            // 点击 chip 直接切到 by_topic 模式出该章节的题并进入 focus mode。
+            // 每次切到 quiz tab 重新抽一批。
+            const quickMidTopics = ref([]);
+            function loadQuickMidTopics() {
                 if (!state.topicsReady) return;
-                try {
-                    const res = await fetch('/api/quiz/question', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ mode: 'random', count: 6 }),
-                    });
-                    if (!res.ok) return;
-                    const data = await res.json();
-                    const qs = Array.isArray(data.questions) ? data.questions : [];
-                    quickQuestions.value = qs.slice(0, 6);
-                } catch (e) { /* 静默：chip 行不是核心入口 */ }
+                const all = Array.isArray(state.topics) ? state.topics : [];
+                // 扁平化：每个 big_topic 下的 mid_topics 展开成 {big_topic, mid_topic, count}
+                const flat = [];
+                for (const t of all) {
+                    const mids = (t.mid_topics || []);
+                    for (const m of mids) {
+                        flat.push({ big_topic: t.big_topic, mid_topic: m.mid_topic, count: Number(m.count) || 0 });
+                    }
+                }
+                if (!flat.length) { quickMidTopics.value = []; return; }
+                // Fisher-Yates 洗牌取前 6 个，让每次切 tab 都不一样
+                const arr = flat.slice();
+                for (let i = arr.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [arr[i], arr[j]] = [arr[j], arr[i]];
+                }
+                quickMidTopics.value = arr.slice(0, 6);
             }
-            // 点击 chip：把这道题塞进 state.questions，切到 focus mode 直接练习
-            function startQuickQuestion(q) {
-                if (!q) return;
-                state.questions = [q];
-                state.currentQIndex = 0;
-                // 重置答案缓存，避免拿别的题的旧答案
-                Object.keys(state.answers).forEach(k => delete state.answers[k]);
-                Object.keys(state.answerLoading).forEach(k => delete state.answerLoading[k]);
-                Object.keys(state.answerError).forEach(k => delete state.answerError[k]);
-                Object.keys(state.revealed).forEach(k => delete state.revealed[k]);
-                state.revealedKeys = 0;
-                state.answeredCount = 0;
-                state.answeredPct = 0;
-                state.expandAll = false;
-                state.lastQueryMode = 'random';
-                state.quizStage = 'focus';
-                state.seenIds.add(Number(q.id));
+            // 点击章节 chip：切到 by_topic 模式并指定该章节，出题后自动进 focus mode
+            function startQuickMidTopic(item) {
+                if (!item) return;
+                state.mode = 'by_topic';
+                state.pickBig = item.big_topic;
+                state.pickMid = item.mid_topic;
+                nextTick(() => { updateSegIndicator(); fetchQuestions('by_topic'); });
             }
 
             function truncate(s, n) {
@@ -1882,8 +1954,8 @@ function main() {
 
             function onQuizTabFocused() {
                 updateSegIndicator();
-                // 每次切到 quiz tab 都重新抽一批「试试这些题」，让用户总能看到新鲜题
-                loadQuickQuestions();
+                // 每次切到 quiz tab 都重新抽一批「试试这些章节」，让用户总能看到新章节
+                loadQuickMidTopics();
             }
 
             watch(() => state.currentApp, (v) => {
@@ -2176,6 +2248,7 @@ function main() {
             const qaChatContainer = ref(null);
 
             // 从题库随机抽 5 道真实题填到「试试」chip 行（题库未就绪时留空，不打扰用户）。
+            // chip 显示「中题目 · 题目」，点击只把题目文本填进输入框。
             // 失败不 fallback——chip 行不是核心入口，留空即可。
             async function randomizeQAExamples() {
                 try {
@@ -2193,7 +2266,9 @@ function main() {
                         const j = Math.floor(Math.random() * (i + 1));
                         [arr[i], arr[j]] = [arr[j], arr[i]];
                     }
-                    qaExamples.value = arr.slice(0, 5).map(q => q.question).filter(Boolean);
+                    qaExamples.value = arr.slice(0, 5)
+                        .map(q => ({ mid_topic: q.mid_topic || '', question: q.question || '' }))
+                        .filter(x => x.question);
                 } catch (e) {
                     qaExamples.value = [];
                 }
@@ -2326,7 +2401,7 @@ function main() {
                 loadSavedResumes();
                 // load quiz data in background
                 await loadQuizStats();
-                loadTopics().then(() => loadQuickQuestions());
+                loadTopics().then(() => loadQuickMidTopics());
                 randomizeQAExamples();
                 nextTick(updateSegIndicator);
                 window.addEventListener('resize', updateSegIndicator, { passive: true });
@@ -2343,12 +2418,12 @@ function main() {
                 // interview
                 saveConfig, testConnection, loadPositions, retryLoadPositions,
                 currentPositionName, currentPositionMeta,
-                loadSavedResumes, selectSavedResume, handlePdfUpload, parseResume,
+                loadSavedResumes, selectSavedResume, deleteSavedResume, handlePdfUpload, parseResume,
                 startInterview, getFirstQuestion, sendAnswer, finishInterview,
                 restartInterview, resetInterviewFlow, gotoResumeUpload, chatContainer, scrollToBottom,
 
                 // quiz
-                loadQuizStats, loadTopics, filteredTopics, currentBigMidList, quickQuestions,
+                loadQuizStats, loadTopics, filteredTopics, currentBigMidList, quickMidTopics,
                 truncate, shortHost, orderPrefix,
                 setMode, pickTopic, onQuizTabFocused, onQuizSidebarSearchEnter,
                 segRef, topicFilter, activeBig, activeMid,
@@ -2358,7 +2433,7 @@ function main() {
                 segIndicatorStyle,
                 gotoHome, gotoPrevQ, gotoNextQ, currentQuestion, jumpToQuizQuestion,
                 pickRandomBigTopic, startRandomNow, onRandomTileClick,
-                loadQuickQuestions, startQuickQuestion,
+                loadQuickMidTopics, startQuickMidTopic,
 
                 // qa assistant
                 qaChatContainer, askQuestion, renderQAAnswer, scrollQAToBottom, autoResizeTextarea, toggleRefs,

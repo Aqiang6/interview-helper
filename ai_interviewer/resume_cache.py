@@ -158,3 +158,17 @@ def save_cached(file_bytes: bytes, resume_data) -> None:
         logger.info("简历缓存已保存: hash=%s... skills=%d", hash_key[:12], len(resume_data.skills))
     except Exception as e:
         logger.warning("保存简历缓存失败（不影响当前解析）: %s", e)
+
+
+def delete_cached_by_hash(hash_key: str) -> bool:
+    """根据 hash 删除缓存简历文件，返回是否删除成功"""
+    meta_file = _meta_path(hash_key)
+    if not meta_file.exists():
+        return False
+    try:
+        meta_file.unlink()
+        logger.info("已删除缓存简历: hash=%s...", hash_key[:12])
+        return True
+    except Exception as e:
+        logger.warning("删除缓存简历失败 %s: %s", hash_key, e)
+        return False

@@ -215,6 +215,16 @@ async def api_get_saved_resume(hash: str):
     return result
 
 
+@app.delete("/api/resumes/{hash}")
+async def api_delete_saved_resume(hash: str):
+    """删除一条已保存的简历缓存"""
+    from ai_interviewer.resume_cache import delete_cached_by_hash
+    deleted = delete_cached_by_hash(hash)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="简历不存在或已被删除")
+    return {"ok": True}
+
+
 @app.post("/api/start-interview")
 async def api_start_interview(request: Request):
     """开始面试（支持前端选择岗位或自定义 JD，后端自动注入）
@@ -384,7 +394,7 @@ async def api_first_question(request: Request):
         response = await agent.get_first_question(session_id)
     except RuntimeError as e:
         msg = str(e) or ""
-        # JD 排序失败、LLM 连不上等"启动前置条件不满足"一律 400 抛给前端弹窗
+        # JD 话题排序失败、LLM 连不上等"启动前置条件不满足"一律 400 抛给前端弹窗
         if "JD 话题排序失败" in msg or "面试无法开始" in msg:
             logger.error("首题启动前置失败: %s", msg)
             raise HTTPException(status_code=400, detail=msg) from e
@@ -403,27 +413,124 @@ async def api_first_question(request: Request):
     }
 
 
-async def _stream_response(agent: InterviewGraphAgent, session_id: str, answer: str):
-    """流式返回面试官回复（出错时以 error chunk 返回，避免 SSE 永远阻塞）"""
-    try:
-        response = await agent.answer_and_ask(session_id, answer)
-    except Exception as e:
-        logger.exception("流式生成回复失败")
-        error_msg = f"（系统提示：生成回复时出错，请检查 API 配置。错误：{type(e).__name__}: {e}）"
-        yield f"data: {json.dumps({'content': error_msg, 'finished': False, 'error': True}, ensure_ascii=False)}\n\n"
+@app.post("/api/first-question-stream")
+async def api_first_question_stream(request: Request):
+    """获取第一个面试问题（SSE 真流式，逐 delta 推送）
+
+    通过模块级 _stream_cb 回调实现：在调 get_first_question 前设置回调，
+    generate_question 节点内部的 _call_llm 会用 stream=True 逐 delta 调回调，
+    回调把 delta 放入 queue，SSE generator 从 queue 读取推送。
+    """
+    import queue as _queue
+    from ai_interviewer.agent import nodes as _nodes
+
+    data = await request.json()
+    session_id = data.get("session_id", "session_1")
+
+    agent = _get_agent(session_id)
+
+    q: _queue.Queue = _queue.Queue()
+    _sentinel = object()
+
+    def _cb(delta: str):
+        q.put(delta)
+
+    _nodes._stream_cb = _cb
+
+    async def _stream():
+        try:
+            # 在线程里跑 get_first_question（同步阻塞），回调逐 delta 入队
+            def _run():
+                try:
+                    loop = asyncio.new_event_loop()
+                    result = loop.run_until_complete(agent.get_first_question(session_id))
+                    loop.close()
+                    return result
+                except Exception as e:
+                    q.put(e)
+                    return None
+                finally:
+                    q.put(_sentinel)
+
+            import threading
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+
+            while True:
+                item = await asyncio.to_thread(q.get)
+                if item is _sentinel:
+                    break
+                if isinstance(item, Exception):
+                    yield f"data: {json.dumps({'type': 'error', 'error': f'生成问题失败: {type(item).__name__}: {item}'}, ensure_ascii=False)}\n\n"
+                    return
+                yield f"data: {json.dumps({'type': 'answer', 'content': item}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.exception("首题流式生成失败")
+            yield f"data: {json.dumps({'type': 'error', 'error': f'生成问题失败: {type(e).__name__}: {e}'}, ensure_ascii=False)}\n\n"
+            return
+        finally:
+            _nodes._stream_cb = None
         session = agent.get_session(session_id)
-        yield f"data: {json.dumps({'content': '', 'finished': session.get('is_finished', False) if session else False, 'question_count': session.get('question_count', 0) if session else 0}, ensure_ascii=False)}\n\n"
-        return
+        finished = session.get("is_finished", False) if session else False
+        yield f"data: {json.dumps({'type': 'done', 'finished': finished}, ensure_ascii=False)}\n\n"
 
-    session = agent.get_session(session_id)
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
-    chunk_size = 8
-    for i in range(0, len(response), chunk_size):
-        chunk = response[i:i + chunk_size]
-        yield f"data: {json.dumps({'content': chunk, 'finished': False}, ensure_ascii=False)}\n\n"
-        await asyncio.sleep(0.03)
 
-    yield f"data: {json.dumps({'content': '', 'finished': session.get('is_finished', False) if session else False, 'question_count': session.get('question_count', 0) if session else 0}, ensure_ascii=False)}\n\n"
+def _stream_response(agent: InterviewGraphAgent, session_id: str, answer: str):
+    """流式返回面试官回复（真 LLM 流式，逐 delta 推送）
+
+    普通函数：调用时同步设置 _stream_cb 并返回 _stream() async generator，
+    供 StreamingResponse 直接迭代；避免 async def 返回 coroutine 导致 500。
+    """
+    import queue as _queue
+    from ai_interviewer.agent import nodes as _nodes
+
+    q: _queue.Queue = _queue.Queue()
+    _sentinel = object()
+
+    def _cb(delta: str):
+        q.put(delta)
+
+    _nodes._stream_cb = _cb
+
+    async def _stream():
+        try:
+            def _run():
+                try:
+                    loop = asyncio.new_event_loop()
+                    result = loop.run_until_complete(agent.answer_and_ask(session_id, answer))
+                    loop.close()
+                    return result
+                except Exception as e:
+                    q.put(e)
+                    return None
+                finally:
+                    q.put(_sentinel)
+
+            import threading
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+
+            while True:
+                item = await asyncio.to_thread(q.get)
+                if item is _sentinel:
+                    break
+                if isinstance(item, Exception):
+                    yield f"data: {json.dumps({'type': 'error', 'error': f'生成回复失败: {type(item).__name__}: {item}'}, ensure_ascii=False)}\n\n"
+                    return
+                yield f"data: {json.dumps({'type': 'answer', 'content': item}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.exception("流式生成回复失败")
+            yield f"data: {json.dumps({'type': 'error', 'error': f'生成回复失败: {type(e).__name__}: {e}'}, ensure_ascii=False)}\n\n"
+            return
+        finally:
+            _nodes._stream_cb = None
+        session = agent.get_session(session_id)
+        finished = session.get("is_finished", False) if session else False
+        yield f"data: {json.dumps({'type': 'done', 'finished': finished}, ensure_ascii=False)}\n\n"
+
+    return _stream()
 
 
 @app.post("/api/chat-stream")
