@@ -230,18 +230,8 @@ def split_markdown(md_text: str, source_url: str = "") -> list[QuestionChunk]:
         )
         chunks.extend(body_chunks)
 
-    # 极端兜底：整页没有切出任何题目，就把整页当一题（避免整页浪费）
-    if not chunks:
-        chunks.append(
-            QuestionChunk(
-                big_topic=big_topic,
-                mid_topic=big_topic,
-                question=f"[{big_topic}] 整节概览",
-                answer_md=_lines_to_md(lines),
-                answer_anchor=_slugify(big_topic) or "overview",
-            )
-        )
-
+    # 极端兜底已移除：整页没有切出任何题目（只有引言/概述）时直接返回空，
+    # 不再生成"[xxx] 整节概览"题，避免非题目内容污染检索。
     logger.info("[quiz.splitter] %s 切出 %d 道题（章节数 %d）",
                 big_topic, len(chunks), len(mid_sections))
     return chunks
@@ -289,20 +279,9 @@ def _parse_mid_section(
         if chunks:
             return chunks
 
-    # 章节型兜底：H2 本身作为题的标题，答案是整节 body
-    answer = _lines_to_md(body_lines).strip()
-    if not answer:
-        # 连正文都没有，就不给空题，直接跳过
-        return []
-    return [
-        QuestionChunk(
-            big_topic=big_topic,
-            mid_topic=mid_title,
-            question=f"{mid_title}（章节考点）",
-            answer_md=answer,
-            answer_anchor=mid_anchor or _slugify(mid_title),
-        )
-    ]
+    # 章节型兜底已移除：没有 H3 也没有"- 题干"列表的 H2 章节视为非题目内容（多为章节引言/
+    # 概述），不再生成"xxx（章节考点）"题，避免污染检索结果。
+    return []
 
 
 # ═══════════════════════════════════════════
@@ -315,12 +294,13 @@ def _parse_mid_section_h3(
     mid_anchor: str,
     body_lines: list[str],
 ) -> list[QuestionChunk]:
-    """按 H3 切分，每个 H3 对应一题，题头 H2 下方直到第一个 H3 的文本作为章节引言并入 mid_title
-    章节题（可选，如果文本够多）。
+    """按 H3 切分，每个 H3 对应一题。
+
+    H2 下方直到第一个 H3 之间的"章节引言"不再入库（避免产生"xxx - 章节引言/考点总览"
+    这类非题目内容，污染检索结果）。
     """
     chunks: list[QuestionChunk] = []
 
-    intro_buf: list[str] = []
     cur_q: Optional[str] = None
     cur_anchor: str = ""
     cur_ans: list[str] = []
@@ -386,27 +366,11 @@ def _parse_mid_section_h3(
 
         if dropping:
             continue
-        if cur_q is None:
-            # 第一题出现前的引言
-            intro_buf.append(line)
-        else:
+        if cur_q is not None:
+            # 第一题出现前的引言直接丢弃（不入库）
             cur_ans.append(line)
 
     _flush_question()
-
-    # 如果引言较长 (> 120 字符)，说明 H2 本身带了一些考点介绍，也作为 1 道章节型题目入题库
-    intro_md = _lines_to_md(intro_buf).strip()
-    if len(intro_md) >= 120:
-        chunks.insert(
-            0,
-            QuestionChunk(
-                big_topic=big_topic,
-                mid_topic=mid_title,
-                question=f"{mid_title} - 章节引言/考点总览",
-                answer_md=intro_md,
-                answer_anchor=mid_anchor or _slugify(mid_title),
-            ),
-        )
     return chunks
 
 

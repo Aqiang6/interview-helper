@@ -26,6 +26,10 @@ from ai_interviewer.agent.topic_prioritizer import (
 
 logger = logging.getLogger(__name__)
 
+# 模块级流式回调，供 generate_question 节点内部使用。
+# 调用方在 invoke graph 前设置，invoke 完后清除。
+_stream_cb = None
+
 # ── 系统提示词 ──
 
 _INTERVIEWER_SYSTEM = """你是一位资深技术面试官，正在针对岗位「{position_name}」进行技术面试。
@@ -185,7 +189,7 @@ def generate_question(state: InterviewState) -> dict:
     # 调用 LLM（原生 openai 库，避免 langchain 消息格式不兼容 bigmodel）
     try:
         openai_messages = _langchain_to_openai_messages(messages)
-        ai_content = _call_llm(state, openai_messages, temperature=0.1, max_tokens=1500)
+        ai_content = _call_llm(state, openai_messages, temperature=0.1, max_tokens=1500, stream_callback=_stream_cb)
     except Exception as e:
         logger.error("LLM 调用失败: %s", e)
         ai_content = (
@@ -324,8 +328,12 @@ def _call_llm(
     temperature: float = 0.1,
     max_tokens: int = 4096,
     timeout: int = 60,
+    stream_callback=None,
 ) -> str:
     """用原生 openai 库调 LLM，返回响应文本（失败直接抛异常）
+
+    当 stream_callback 不为 None 时，使用 stream=True 逐 delta 调用回调函数，
+    实现真流式输出。回调签名：stream_callback(delta: str) -> None。
     max_tokens=4096 兼容思考模型（如 glm-5.3-flash）：思考过程+输出内容共需较大空间
     """
     import time as _time
@@ -339,6 +347,29 @@ def _call_llm(
         max_retries=0,
     )
     t0 = _time.time()
+
+    if stream_callback is not None:
+        # 流式模式：逐 delta 推送给回调，同时拼接完整文本
+        stream = client.chat.completions.create(
+            model=state.get("model", "gpt-4o"),
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        content = ""
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                content += delta
+                stream_callback(delta)
+        elapsed = _time.time() - t0
+        logger.info("LLM 流式调用完成: model=%s 耗时=%.1fs 输出=%d字符", state.get("model", ""), elapsed, len(content))
+        return content
+
+    # 非流式模式（原有逻辑不变）
     resp = client.chat.completions.create(
         model=state.get("model", "gpt-4o"),
         messages=messages,
