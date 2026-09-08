@@ -39,7 +39,36 @@ _sessions: dict[str, InterviewGraphAgent] = {}
 #  FastAPI 应用
 # ═══════════════════════════════════════════
 
-app = FastAPI(title="AI 模拟面试", version="0.2.0")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动时预热 embedding 模型，退出时无需特殊清理。
+
+    后台线程预热 sentence-transformers 模型，避免用户第一次问问题时卡在
+    Loading weights 进度条上（第一次 ~80MB 权重加载会显示进度条，看起来像"向量化慢"）。
+    仅 QUIZ_EMBEDDING_BACKEND=sentence_transformers 时执行；OpenAI 后端无需预热。
+    预热在 daemon 线程里跑，不阻塞 FastAPI 启动；失败只打 warning，不影响服务可用性。
+    """
+    import threading
+    try:
+        from ai_interviewer.config import get_settings
+        s = get_settings()
+        if (s.quiz_embedding_backend or "sentence_transformers").lower() == "sentence_transformers":
+            def _warm():
+                try:
+                    from ai_interviewer.quiz.ingest import warmup_embedding_model
+                    warmup_embedding_model()
+                except Exception as e:
+                    logger.warning("[startup] embedding 模型预热失败: %s", e)
+            threading.Thread(target=_warm, daemon=True, name="embedding-warmup").start()
+    except Exception as e:
+        logger.warning("[startup] embedding 预热钩子异常: %s", e)
+    yield
+
+
+app = FastAPI(title="AI 模拟面试", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,30 +77,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def _warmup_embedding_model_on_startup():
-    """后台线程预热 sentence-transformers 模型，避免用户第一次问问题时卡在 Loading weights
-    进度条上（第一次 ~80MB 权重加载会显示进度条，看起来像"向量化慢"）。
-    仅 QUIZ_EMBEDDING_BACKEND=sentence_transformers 时执行；OpenAI 后端无需预热。
-    预热在 daemon 线程里跑，不阻塞 FastAPI 启动；失败只打 warning，不影响服务可用性。
-    """
-    import threading
-    try:
-        from ai_interviewer.config import get_settings
-        s = get_settings()
-        if (s.quiz_embedding_backend or "sentence_transformers").lower() != "sentence_transformers":
-            return
-        def _warm():
-            try:
-                from ai_interviewer.quiz.ingest import warmup_embedding_model
-                warmup_embedding_model()
-            except Exception as e:
-                logger.warning("[startup] embedding 模型预热失败: %s", e)
-        threading.Thread(target=_warm, daemon=True, name="embedding-warmup").start()
-    except Exception as e:
-        logger.warning("[startup] embedding 预热钩子异常: %s", e)
 
 
 # ═══════════════════════════════════════════
@@ -987,4 +992,15 @@ if __name__ == "__main__":
             port = int(sys.argv[1])
         except ValueError:
             pass
-    uvicorn.run(app, host=host, port=port)
+    # 用 uvicorn.Config + Server 显式控制信号处理：
+    # - install_signal_handlers=lambda: None：不安装 uvicorn 自己的 SIGINT handler，
+    #   Ctrl+C 直接走 Python 默认行为（抛 KeyboardInterrupt 终止进程），
+    #   避免 start_app.bat 下需要多次 Ctrl+C 才能退出。
+    # - try/except 捕获 KeyboardInterrupt 静默退出，避免打印 asyncio 堆栈。
+    config = uvicorn.Config(app, host=host, port=port)
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
