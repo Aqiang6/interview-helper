@@ -22,3 +22,6 @@ Thumbs.db
 
 # Tesseract installer
 tesseract-installer.exe
+
+# Resume cache
+ai_interviewer/.resume_cache/
