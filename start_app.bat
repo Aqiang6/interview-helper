@@ -16,10 +16,18 @@ if exist "%PG_HOME%\bin\pg_ctl.exe" (
         REM status failed, check if port 5432 is already in use (PG might be running)
         netstat -ano | findstr ":5432" | findstr "LISTENING" >nul 2>&1
         if errorlevel 1 (
-            "%PG_HOME%\bin\pg_ctl.exe" start -D "%PG_DATA%" -l "%PG_DATA%\pg.log"
+            REM PG not running and port free: remove stale postmaster.pid so pg_ctl start won't hang
+            if exist "%PG_DATA%\postmaster.pid" (
+                echo       Removing stale postmaster.pid...
+                del /q "%PG_DATA%\postmaster.pid" 2>nul
+            )
+            REM Start PG with -l NUL to avoid pg.log file lock issues
+            REM (Windows antivirus may briefly lock freshly created pg.log, causing
+            REM 30s "sharing violation" retry loop in PG startup process)
+            "%PG_HOME%\bin\pg_ctl.exe" start -D "%PG_DATA%" -l NUL
             if errorlevel 1 (
                 echo.
-                echo [WARN] PostgreSQL failed to start. Check log: %PG_DATA%\pg.log
+                echo [WARN] PostgreSQL failed to start. Check log: %PG_DATA%\log\
                 echo        Will continue to start web app. DB calls will fail until PG is ready.
                 echo.
             ) else (
@@ -32,7 +40,7 @@ if exist "%PG_HOME%\bin\pg_ctl.exe" (
         echo       PostgreSQL is already running, skip start.
     )
 ) else (
-    echo [1/2] %PG_HOME%\bin\pg_ctl.exe not found, skip PostgreSQL auto-start.
+    echo [1/1] %PG_HOME%\bin\pg_ctl.exe not found, skip PostgreSQL auto-start.
 )
 
 REM ----- 2. Start Web Application -----
@@ -56,23 +64,16 @@ if errorlevel 1 (
 )
 
 python -m ai_interviewer.app
-set "APP_EXIT=%errorlevel%"
 
-echo.
-if "%APP_EXIT%"=="0" (
-    echo Web application exited normally.
-) else (
-    echo [ERROR] Web application exited with code: %APP_EXIT%
-    echo        Please check the log above.
+REM ----- Force kill any leftover python on port 8000 (uvicorn may not exit on first Ctrl+C) -----
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do (
+    taskkill /F /PID %%a >nul 2>&1
 )
 
-REM ----- Stop PostgreSQL on exit -----
-if exist "%PG_HOME%\bin\pg_ctl.exe" (
-    echo.
+REM ----- Stop PostgreSQL on exit (suppress errors to avoid extra Ctrl+C prompts) -----
+if exist "%PG_HOME%\bin\pg_ctl.exe" if exist "%PG_DATA%\postmaster.pid" (
     echo Stopping PostgreSQL...
-    "%PG_HOME%\bin\pg_ctl.exe" stop -D "%PG_DATA%" -m fast
+    "%PG_HOME%\bin\pg_ctl.exe" stop -D "%PG_DATA%" -m fast 2>nul
 )
 
-echo.
-echo Press any key to close...
-pause >nul
+exit /b 0

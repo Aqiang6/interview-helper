@@ -117,6 +117,12 @@ class SentenceTransformerEmbedder:
                 "或（默认 pip 源，GPU 用户）：\n"
                 "  python -m pip install sentence-transformers"
             ) from e
+        # 强制 huggingface_hub 离线模式：模型已缓存在本地
+        # （~/.cache/huggingface/hub/），加载应纯磁盘→内存，跳过任何 etag 网络检查，
+        # 避免 HF_ENDPOINT 不稳定时报 "Server disconnected without sending a response"
+        import os as _os
+        _os.environ["HF_HUB_OFFLINE"] = "1"
+        _os.environ["TRANSFORMERS_OFFLINE"] = "1"
         logger.info("[quiz.ingest] Loading SentenceTransformer %s ...", self.model_name)
         model = SentenceTransformer(self.model_name)
         # 推断实际输出维度；若与 settings.quiz_embedding_dimensions 不一致，给出明确错误，
