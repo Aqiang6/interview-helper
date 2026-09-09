@@ -13,7 +13,7 @@
     <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%230071e3'/><text x='16' y='22' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,&quot;SF Pro Display&quot;,sans-serif' font-size='19' font-weight='700' fill='white'>I</text></svg>" />
 
     <!-- Apple-flavored design tokens -->
-    <link rel="stylesheet" href="/static/styles.apple.css?v=19" />
+    <link rel="stylesheet" href="/static/styles.apple.css?v=20" />
     <!-- Vue 3 + Element Plus (legacy interview flow still depends on them)
          NOTE: intentionally NOT `defer` because the inline <script> at the end of
          <body> references `Vue` / `ElementPlus` synchronously. Deferring these
@@ -234,10 +234,6 @@
             padding: var(--sp-5) var(--sp-6) var(--sp-5);
             margin: calc(var(--sp-6) * -1) calc(var(--sp-6) * -1) 0;
         }
-        .qa-hero__kicker {
-            font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: 0.06em;
-            text-transform: uppercase; color: var(--accent); margin-bottom: var(--sp-1);
-        }
         .qa-hero__title {
             margin: 0; font-size: var(--fs-2xl); font-weight: var(--fw-bold); letter-spacing: -0.02em; color: var(--text);
         }
@@ -247,6 +243,9 @@
         .qa-hero__chips {
             margin-top: var(--sp-3); display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center;
         }
+        /* 「试试」chip：题目文本允许换行，限制单 chip 最大宽度，完整显示长题目 */
+        .qa-hero__chips .chip { max-width: 100%; align-items: flex-start; }
+        .qa-hero__chips .chip__text { white-space: normal; word-break: break-word; line-height: 1.4; }
 
         /* 问答主 box：固定高度，上方滚动区 + 下方固定输入框 */
         .qa-box {
@@ -836,7 +835,6 @@
                 <!-- Hero：随机抽题（主打） — 单栏，重心在「开始练习」按钮，去掉右侧用户觉得「莫名其妙」的数量格子 -->
                 <div class="quiz-hero quiz-hero--single card">
                     <div class="quiz-hero__left">
-                        <div class="quiz-hero__kicker">🎲 主打 · 随机抽题</div>
                         <h1 class="quiz-hero__title">点开即练，通勤 5 分钟也能过一遍</h1>
                         <p class="quiz-hero__sub">
                             算法保证不重复随机抽，出题后进入「单题专注练习」模式，做完一题自动跳到下一题。
@@ -859,7 +857,8 @@
                                 type="button"
                                 @click="startQuickMidTopic(m)"
                                 :disabled="questionsLoading">
-                                {{ truncate(m.mid_topic, 14) }}
+                                <span class="chip__tag">{{ m.big_topic }}</span>
+                                <span class="chip__text">{{ m.mid_topic }}</span>
                             </button>
                         </div>
                     </div>
@@ -1118,7 +1117,6 @@
                 <div class="qa-scroll" :class="{ 'qa-scroll--empty': qaMessages.length === 0 }" ref="qaChatContainer">
                     <!-- Hero 介绍（随内容一起滚动） -->
                     <div class="qa-hero">
-                        <div class="qa-hero__kicker">💡 AI 问答助手</div>
                         <h1 class="qa-hero__title">基于内部知识库的技术问答</h1>
                         <p class="qa-hero__sub">
                             提问任意技术问题，系统会从题库中语义检索最相关的内容，由 AI 综合作答，并在回答末尾附上可直接练习的参考例题。
@@ -1130,9 +1128,9 @@
                                 :key="i"
                                 class="chip"
                                 type="button"
-                                @click="qaInput = ex.question">
+                                @click="askQuestion({ mid_topic: ex.mid_topic, question: ex.question })">
                                 <span class="chip__tag">{{ ex.mid_topic }}</span>
-                                <span class="chip__text">{{ truncate(ex.question, 16) }}</span>
+                                <span class="chip__text">{{ ex.question }}</span>
                             </button>
                         </div>
                     </div>
@@ -1196,9 +1194,9 @@
                         rows="1"
                         placeholder="输入你的技术问题…"
                         @input="autoResizeTextarea"
-                        @keydown.enter.exact.prevent="askQuestion"
+                        @keydown.enter.exact.prevent="askQuestion()"
                         :disabled="qaLoading"></textarea>
-                    <button type="button" class="btn btn--primary" @click="askQuestion" :disabled="qaLoading || !qaInput.trim()">
+                    <button type="button" class="btn btn--primary" @click="askQuestion()" :disabled="qaLoading || !qaInput.trim()">
                         <span v-if="qaLoading">发送中…</span>
                         <span v-else>发送</span>
                     </button>
@@ -1877,7 +1875,7 @@ function main() {
                     const j = Math.floor(Math.random() * (i + 1));
                     [arr[i], arr[j]] = [arr[j], arr[i]];
                 }
-                quickMidTopics.value = arr.slice(0, 6);
+                quickMidTopics.value = arr.slice(0, 3);
             }
             // 点击章节 chip：切到 by_topic 模式并指定该章节，出题后自动进 focus mode
             function startQuickMidTopic(item) {
@@ -2255,20 +2253,22 @@ function main() {
                     const res = await fetch('/api/quiz/question', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ mode: 'random', count: 8 }),
+                        body: JSON.stringify({ mode: 'random', count: 20 }),
                     });
                     if (!res.ok) { qaExamples.value = []; return; }
                     const data = await res.json();
                     const qs = Array.isArray(data.questions) ? data.questions : [];
-                    // Fisher-Yates 洗牌取前 5 个，让每次切 tab 都不一样
+                    // Fisher-Yates 洗牌，让每次切 tab 都不一样
                     const arr = qs.slice();
                     for (let i = arr.length - 1; i > 0; i--) {
                         const j = Math.floor(Math.random() * (i + 1));
                         [arr[i], arr[j]] = [arr[j], arr[i]];
                     }
-                    qaExamples.value = arr.slice(0, 5)
+                    // 先过滤"以问号结尾"的题，再取前 3 题，保证题数稳定
+                    qaExamples.value = arr
                         .map(q => ({ mid_topic: q.mid_topic || '', question: q.question || '' }))
-                        .filter(x => x.question);
+                        .filter(x => x.question && /[？?]$/.test(x.question))
+                        .slice(0, 3);
                 } catch (e) {
                     qaExamples.value = [];
                 }
@@ -2311,15 +2311,33 @@ function main() {
                 catch (e) { return '<pre style="white-space:pre-wrap;">' + md + '</pre>'; }
             }
 
-            async function askQuestion() {
-                const q = (state.qaInput || '').trim();
+            async function askQuestion(tryEx = null) {
+                // 防御：万一调用方传入了 Event 对象（如 @click="askQuestion" 无括号），
+                // 当作常规提问处理，避免误进「试试」分支导致 q 为空。
+                if (tryEx && typeof tryEx === 'object' && !(tryEx.mid_topic || tryEx.question) && tryEx.target) {
+                    tryEx = null;
+                }
+                let q, tryPayload = null;
+                if (tryEx && tryEx.question) {
+                    // 「试试」模式：chip 点击直接提问，带上中标题与问题
+                    q = (tryEx.question || '').trim();
+                    tryPayload = {
+                        mid_topic: (tryEx.mid_topic || '').trim(),
+                        question: q,
+                    };
+                } else {
+                    q = (state.qaInput || '').trim();
+                }
                 if (!q || state.qaLoading) return;
                 if (!state.form.apiKey) {
                     ElMessage.warning('请先在「面试助手 → 模型设置」中配置 API Key');
                     return;
                 }
-                // 用户消息
-                state.qaMessages.push({ role: 'user', content: q, _time: _qaClock() });
+                // 用户消息：试试模式同时带上中标题与问题
+                const displayQ = tryPayload && tryPayload.mid_topic
+                    ? `[${tryPayload.mid_topic}] ${q}`
+                    : q;
+                state.qaMessages.push({ role: 'user', content: displayQ, _time: _qaClock() });
                 state.qaInput = '';
                 nextTick(() => {
                     const ta = document.querySelector('.qa-textarea');
@@ -2337,6 +2355,7 @@ function main() {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             question: q,
+                            try_question: tryPayload,
                             api_key: state.form.apiKey,
                             base_url: state.form.baseUrl,
                             model: state.form.model,

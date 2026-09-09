@@ -387,6 +387,48 @@ def search_for_qa(
     return out
 
 
+def pick_exact_for_qa(mid_topic: str, question: str) -> Optional[QAContextItem]:
+    """问答助手「试试」专用：按 (mid_topic, question) 等值精准命中一道题，直接带出 answer_md。
+
+    与 :func:`search_for_qa` 的区别：
+    - 不做 embedding、不做向量相似度检索，仅用等值 SQL 命中 chip 给出的那道题；
+    - 用于「试试」chip 直接提问场景：只参考给出的那道题，不走常规检索流程。
+    命中返回单条 QAContextItem（similarity=None），未命中返回 None。
+    """
+    if not mid_topic or not question:
+        return None
+    sql = text(
+        "SELECT id, big_topic, mid_topic, question, answer_md, source_url, answer_anchor "
+        "FROM quiz_questions "
+        "WHERE mid_topic = :mid AND question = :q "
+        "LIMIT 1"
+    ).bindparams(mid=mid_topic, q=question)
+    with session_scope() as sess:
+        r = sess.execute(sql).mappings().first()
+    if not r:
+        logger.info(
+            "[qa.retriever] pick_exact 未命中 mid=%r q=%r",
+            mid_topic, question[:80],
+        )
+        return None
+    src = r["source_url"] or ""
+    anchor = r["answer_anchor"] or ""
+    logger.info(
+        "[qa.retriever] pick_exact 命中 mid=%r q=%r -> id=%s",
+        mid_topic, question[:80], r["id"],
+    )
+    return QAContextItem(
+        id=int(r["id"]),
+        big_topic=r["big_topic"],
+        mid_topic=r["mid_topic"],
+        question=r["question"],
+        answer_md=r["answer_md"],
+        source_url=src,
+        source_url_with_anchor=absolutize_source_url_anchor(src, anchor),
+        similarity=None,
+    )
+
+
 # ═══════════════════════════════════════════
 #  6. 显示答案
 # ═══════════════════════════════════════════
