@@ -1144,6 +1144,8 @@ a:hover { text-decoration: underline; }
 .quiz-hero__chiprow {
     display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center;
 }
+/* 「试试这些章节」chip：完整显示大/中标题，不截断 */
+.quiz-hero__chiprow .chip__text { white-space: normal; word-break: break-word; line-height: 1.4; }
 .quiz-hero__right {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1411,10 +1413,10 @@ a:hover { text-decoration: underline; }
 /* ---------- Single-column Quiz Hero (Q3: 移除右侧「莫名其妙」的数量格子后单栏更聚焦) ---------- */
 .quiz-hero--single {
     grid-template-columns: minmax(0, 1fr);
-    padding: var(--sp-12) var(--sp-10);
+    padding: var(--sp-5) var(--sp-6);
 }
 @media (max-width: 780px) {
-    .quiz-hero--single { padding: var(--sp-8) var(--sp-6); }
+    .quiz-hero--single { padding: var(--sp-5) var(--sp-6); }
 }
 .quiz-hero--single .quiz-hero__left { max-width: 920px; }
 .quiz-hero--single .quiz-hero__sub { max-width: 68ch; }

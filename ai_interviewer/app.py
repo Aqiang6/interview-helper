@@ -729,7 +729,7 @@ async def api_quiz_answer(question_id: int):
 _QA_SYSTEM_PROMPT = """你是一个 AI 技术问答助手。用户会提出技术问题，你会拿到一组「知识库参考片段」，请综合这些片段与你的专业知识作答。
 
 ## 回答要求
-1. 优先采用知识库片段中的准确内容，同时可自然融合你的专业知识补充完善。
+1. 优先采用你的专业知识，拿到知识库的主题不一定准确，如果符合你的思路，可以参考知识库内容，如果不符合，就不参考
 2. 回答使用 Markdown 格式，善用标题、列表、代码块、表格让结构清晰。
 3. 回答要准确、专业、有深度，适合面试准备与技术学习场景。
 4. **不要**在回答末尾自己列出参考题目或引用链接——参考例题会由系统在回答下方单独展示。
@@ -768,6 +768,34 @@ def _build_qa_context(items) -> tuple[str, list[dict]]:
             "similarity": it.similarity,
         })
     return "\n\n---\n\n".join(parts), refs
+
+
+def _build_try_qa_context(mid_topic: str, question: str) -> tuple[str, list[dict]]:
+    """「试试」模式：只用 (mid_topic, question) 等值精准命中的那道题作上下文。
+
+    不做向量化、不做相似度检索，仅参考 chip 给出的那道题的 answer_md。
+    命中返回单条上下文 + 参考例题；未命中返回空上下文 + 空列表（LLM 仍可凭自身知识作答）。
+    """
+    from ai_interviewer.quiz import retriever
+    it = retriever.pick_exact_for_qa(mid_topic, question)
+    if it is None:
+        return "", []
+    context = (
+        f"【片段 1】\n"
+        f"主题: {it.big_topic} / {it.mid_topic}\n"
+        f"问题: {it.question}\n"
+        f"答案:\n{it.answer_md}"
+    )
+    refs = [{
+        "id": it.id,
+        "big_topic": it.big_topic,
+        "mid_topic": it.mid_topic,
+        "question": it.question,
+        "source_url": it.source_url,
+        "source_url_with_anchor": it.source_url_with_anchor,
+        "similarity": it.similarity,
+    }]
+    return context, refs
 
 
 def _qa_llm_stream(*, api_key: str, base_url: str, model: str, question: str, context: str):
@@ -828,6 +856,7 @@ async def api_qa_ask(request: Request):
     model = (data.get("model") or "gpt-4o").strip()
     top_k_raw = data.get("top_k")
     min_sim_raw = data.get("min_similarity")
+    try_question = data.get("try_question")  # {'mid_topic','question'} -> 试试模式
 
     if not question:
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -837,22 +866,30 @@ async def api_qa_ask(request: Request):
     top_k = int(top_k_raw) if top_k_raw is not None and int(top_k_raw) > 0 else None
     min_sim = float(min_sim_raw) if min_sim_raw is not None else None
 
-    # 1) 语义检索知识库
-    try:
-        from ai_interviewer.quiz import retriever
-        items = retriever.search_for_qa(
-            query=question,
-            count=top_k,
-            min_similarity=min_sim,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("问答助手检索失败")
-        raise HTTPException(status_code=500, detail=f"知识库检索失败: {type(e).__name__}: {e}")
+    if try_question:
+        # 「试试」模式：跳过向量化与常规语义检索，只参考 chip 给出的那道题
+        mid_topic = (try_question.get("mid_topic") or "").strip()
+        q_text = (try_question.get("question") or "").strip()
+        context, refs = _build_try_qa_context(mid_topic, q_text)
+        llm_question = f"中标题: {mid_topic}\n问题: {q_text}" if mid_topic else q_text
+    else:
+        # 1) 语义检索知识库
+        try:
+            from ai_interviewer.quiz import retriever
+            items = retriever.search_for_qa(
+                query=question,
+                count=top_k,
+                min_similarity=min_sim,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("问答助手检索失败")
+            raise HTTPException(status_code=500, detail=f"知识库检索失败: {type(e).__name__}: {e}")
 
-    items = _filter_qa_items(items)
-    context, refs = _build_qa_context(items)
+        items = _filter_qa_items(items)
+        context, refs = _build_qa_context(items)
+        llm_question = question
 
     # 2) LLM 综合回答（在线程池跑同步调用，避免阻塞 async event loop）
     try:
@@ -860,7 +897,7 @@ async def api_qa_ask(request: Request):
             api_key=api_key,
             base_url=base_url,
             model=model,
-            question=question,
+            question=llm_question,
             context=context,
         )
         answer = await asyncio.to_thread(lambda: "".join(gen))
@@ -872,32 +909,51 @@ async def api_qa_ask(request: Request):
     return {"answer": answer, "references": refs}
 
 
-async def _qa_stream(question: str, api_key: str, base_url: str, model: str, top_k: int, min_sim):
-    """SSE 流式返回问答结果：先推 status 进度，LLM 真流式逐 delta 推 answer，流完最后推 references。"""
+async def _qa_stream(question: str, api_key: str, base_url: str, model: str, top_k: int, min_sim, *, try_question=None):
+    """SSE 流式返回问答结果：先推 status 进度，LLM 真流式逐 delta 推 answer，流完最后推 references。
+
+    当传入 ``try_question={'mid_topic':..., 'question':...}`` 时进入「试试」模式：
+    跳过向量化与常规语义检索，只用等值命中的那道题作上下文，LLM user 消息同时带上中标题与问题。
+    """
     from ai_interviewer.quiz import retriever
     from ai_interviewer.quiz.ingest import is_model_loaded
 
-    # 模型未加载时显示"加载模型"文案，避免文案不准——首次调用实际是模型加载（带 Loading
-    # weights 进度条），不是向量化本身慢。已加载（含预热完成）则显示"向量化问题"。
-    if is_model_loaded():
-        yield f"data: {json.dumps({'type': 'status', 'content': '正在向量化问题…'}, ensure_ascii=False)}\n\n"
+    if try_question:
+        # 「试试」模式：只参考 chip 给出的那道题，不向量化、不走常规检索
+        mid_topic = (try_question.get("mid_topic") or "").strip()
+        q_text = (try_question.get("question") or "").strip()
+        yield f"data: {json.dumps({'type': 'status', 'content': '正在检索指定题目…'}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0)
+        context, refs = _build_try_qa_context(mid_topic, q_text)
+        found = len(refs)
+        yield f"data: {json.dumps({'type': 'status', 'content': f'已检索到 {found} 条相关内容，正在生成答案…'}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0)
+        # 提问内容同时带上「试试」给出的中标题与问题
+        llm_question = f"中标题: {mid_topic}\n问题: {q_text}" if mid_topic else q_text
     else:
-        yield f"data: {json.dumps({'type': 'status', 'content': '正在加载 embedding 模型（首次较慢）…'}, ensure_ascii=False)}\n\n"
-    await asyncio.sleep(0)
+        # 常规流程：向量化 + 语义检索
+        # 模型未加载时显示"加载模型"文案，避免文案不准——首次调用实际是模型加载（带 Loading
+        # weights 进度条），不是向量化本身慢。已加载（含预热完成）则显示"向量化问题"。
+        if is_model_loaded():
+            yield f"data: {json.dumps({'type': 'status', 'content': '正在向量化问题…'}, ensure_ascii=False)}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'status', 'content': '正在加载 embedding 模型（首次较慢）…'}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0)
 
-    items = retriever.search_for_qa(query=question, count=top_k, min_similarity=min_sim)
+        items = retriever.search_for_qa(query=question, count=top_k, min_similarity=min_sim)
 
-    yield f"data: {json.dumps({'type': 'status', 'content': f'已检索到 {len(items)} 条相关内容，正在生成答案…'}, ensure_ascii=False)}\n\n"
-    await asyncio.sleep(0)
+        yield f"data: {json.dumps({'type': 'status', 'content': f'已检索到 {len(items)} 条相关内容，正在生成答案…'}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0)
 
-    context, refs = _build_qa_context(items)
+        context, refs = _build_qa_context(items)
+        llm_question = question
 
     try:
         gen = _qa_llm_stream(
             api_key=api_key,
             base_url=base_url,
             model=model,
-            question=question,
+            question=llm_question,
             context=context,
         )
         # 同步生成器放线程池逐块拉取，真实时产出
@@ -923,7 +979,11 @@ async def _qa_stream(question: str, api_key: str, base_url: str, model: str, top
 
 @app.post("/api/qa/ask-stream")
 async def api_qa_ask_stream(request: Request):
-    """AI 问答助手（SSE 流式）。事件类型：references / answer / error / done。"""
+    """AI 问答助手（SSE 流式）。事件类型：references / answer / error / done。
+
+    body 可选 ``try_question={"mid_topic":..., "question":...}``：进入「试试」模式，
+    跳过向量化与常规检索，只参考该题作答。
+    """
     _quiz_available()
     data = await request.json() or {}
     question = (data.get("question") or "").strip()
@@ -932,6 +992,7 @@ async def api_qa_ask_stream(request: Request):
     model = (data.get("model") or "gpt-4o").strip()
     top_k_raw = data.get("top_k")
     min_sim_raw = data.get("min_similarity")
+    try_question = data.get("try_question")  # {'mid_topic','question'} -> 试试模式
 
     if not question:
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -942,7 +1003,7 @@ async def api_qa_ask_stream(request: Request):
     min_sim = float(min_sim_raw) if min_sim_raw is not None else None
 
     return StreamingResponse(
-        _qa_stream(question, api_key, base_url, model, top_k, min_sim),
+        _qa_stream(question, api_key, base_url, model, top_k, min_sim, try_question=try_question),
         media_type="text/event-stream",
     )
 
