@@ -63,6 +63,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Auto-open browser (detached)
+start "" http://localhost:8000
+
 python -m ai_interviewer.app
 
 REM ----- Force kill any leftover python on port 8000 (uvicorn may not exit on first Ctrl+C) -----
