@@ -34,6 +34,8 @@ plan_interview（JD+简历规划话题与配额）
 
 ### 2. 刷题助手：爬取 → 切片 → 向量化 → 入库（`ai_interviewer/quiz/`）
 
+**爬虫方案的由来**：一开始不知道 JavaGuide 的[开源仓库](https://github.com/Snailclimb/JavaGuide)中已经提供了 Markdown 源文档，因此选择了爬取网页、再转为 Markdown 的方案。后来发现可直接获取仓库里的 `.md` 文档，再做切题、向量化和入库，其实无需爬虫；当前项目保留的是下述爬虫实现。
+
 ```
 爬虫.txt (种子 URL)
   → crawler.crawl_urls (httpx + tenacity 重试 + asyncio.Semaphore 并发)
@@ -48,7 +50,7 @@ plan_interview（JD+简历规划话题与配额）
 * **embedding 文本** = `大主题｜中主题｜题干`（不含答案）—— 大/中标题作分类约束让同主题向量聚拢，题干含考点关键词作语义匹配依据。
 * **去重 + 索引**：`source_hash = sha1(source_url + '#' + answer_anchor)` UNIQUE 约束做增量 upsert；`embedding` 列类型 `vector(N)`，建 HNSW 索引（`vector_cosine_ops`）+ `(big_topic, mid_topic)` 复合索引 + `to_tsvector('simple', question)` GIN 索引（备用关键词搜索）。
 * **三模式检索**：随机 `ORDER BY RANDOM()`；按主题 `(big_topic, mid_topic)` 精确 WHERE + `ordinal` 排序保原题序；自定义主题把输入文本用同一 `Embedder.embed_query` 做向量，pgvector `<=>` 余弦距离排序 + 阈值过滤取 topK。出题接口一律**不带答案**，点"显示答案"时前端再单独请求。
-* **embedding 后端二选一**：`sentence_transformers`（默认，本地 Sentence-BERT，首次下载权重 ~80MB，启动时后台 daemon 线程预热）；`openai`（复用 `OPENAI_API_KEY` 走 `text-embedding-3-small` 等）。维度由 `QUIZ_EMBEDDING_DIMENSIONS` 显式声明，校验失败直接抛错（不静默 fallback）。
+* **embedding 后端**：使用 `sentence_transformers` 在本地运行 Sentence-BERT，无需 API Key，启动时后台 daemon 线程预热。向量维度由 `QUIZ_EMBEDDING_DIMENSIONS` 显式声明，校验失败直接抛错（不静默 fallback）。
 
 ### 3. AI 问答助手：知识库语义检索 + LLM 综合（`ai_interviewer/app.py` + `quiz/retriever.py`）
 
@@ -113,14 +115,14 @@ plan_interview（JD+简历规划话题与配额）
 
 * Python 3.10+
 * PostgreSQL 14+，安装 **pgvector 扩展**
-* 一个 OpenAI 兼容的 LLM API（面试 Agent 和问答助手用；刷题模块默认用本地 embedding 模型，不需要 Key）
+* 一个 OpenAI 兼容的 LLM API（面试 Agent 和问答助手用；刷题模块用本地 sentence-transformers embedding 模型，不需要 Key）
 
 ### 1. 安装依赖
 
 ```bash
 cd Interview_Helper
 pip install -e .
-# 刷题使用本地 embedding 时额外装（CPU 版 PyTorch + sentence-transformers）：
+# 刷题模块额外安装本地 embedding 依赖（CPU 版 PyTorch + sentence-transformers）：
 python -m pip install sentence-transformers torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
