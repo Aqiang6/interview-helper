@@ -10,7 +10,66 @@
 
 ***
 
-## 一、项目功能
+## 一、底层实现简述
+
+### 1. AI 模拟面试：LangGraph 状态机（`ai_interviewer/agent/`）
+
+7 节点共享 `InterviewState`：`messages`（Memory）/ `interview_plan`（Planning）/ 简历与 JD（Context）/ 题数与当前话题（Progress）。
+
+```
+plan_interview（JD+简历规划话题与配额）
+  ├─ 无 HumanMessage → generate_question（出第一题）
+  └─ 有 HumanMessage → evaluate_response（占位） → decide_next（纯规则路由）
+                                              ├─ followup（追问）  ┐
+                                              ├─ next_topic（换话题）┴→ generate_question → END
+                                              └─ end → generate_evaluation → END
+```
+
+* **JD 驱动话题规划**：`prioritize_by_jd`（`topic_prioritizer.py`）把 JD 原文 + 岗位名喂给 LLM，要求输出 JSON `{ordered_topics, skill_importance, suggested_max_questions, topics_per_skill}`；预置 JD 按 `sha256(jd_raw_text)` 缓存到 `.jd_cache/`，下次秒读；任何失败直接抛错（不降级），错误消息对 `api_key` 脱敏后回传前端。
+* **多因子规则评分（备用规划器 `TopicPrioritizer`）**：4 层可插拔因子 — Category 基础权重（AI_AGENT_CORE > 分布式 > 数据层 > 语言框架 > 工具）+ 简历命中深度加成 + 知识库覆盖加成 + 同类聚类连续性；通过 `register_rule()` 扩展无需改核心。
+* **路由决策（`make_route_decision`）**：纯规则、不看回答质量 — 题数到顶 → end；本话题配额满且还有后续 → next_topic；末话题 → followup 深挖；剩题不足以覆盖剩余话题 → next_topic 压缩追问；默认 followup。
+* **出题上下文**：System Prompt 拼装 = 面试官人设 + JD 要求强度（required/preferred/bonus）+ 当前话题配额进度 + 简历项目段落 + 自定义面试指令；调用原生 `openai` 库（不用 langchain 的 LLM 抽象，避免 bigmodel 兼容问题）。
+* **SSE 真流式**：模块级 `_stream_cb` 回调机制 — invoke graph 前设置回调，graph 内 `_call_llm` 用 `stream=True` 逐 delta 调回调，回调把 delta 放入 `queue.Queue`，SSE generator 从队列读取推送；graph 在独立线程跑同步 `invoke`，避免阻塞 async event loop。
+* **简历解析**：`resume_parser.py` 用关键词词库 + 正则模式提取技能 / 项目 / 学历 / 年限；`_extract_project_details` 用极简状态机切项目段落（短行 + 无冒号 = 段标题），不调 LLM；PDF 按文件 SHA256 缓存解析结果到 `.resume_cache/`，避免重复解析。
+
+### 2. 刷题助手：爬取 → 切片 → 向量化 → 入库（`ai_interviewer/quiz/`）
+
+```
+爬虫.txt (种子 URL)
+  → crawler.crawl_urls (httpx + tenacity 重试 + asyncio.Semaphore 并发)
+  → BeautifulSoup 选最大正文容器 + html2text 转 Markdown (保留 H1/H2/H3/链接/表格/代码)
+  → splitter.split_markdown (纯状态机切题，不依赖 LLM)
+  → ingest._build_embeddings (sentence-transformers 批量 encode)
+  → db.bulk_upsert (sha1(source_url + '#' + anchor) 去重 upsert + HNSW 索引)
+```
+
+* **两层爬取**：种子页当目录（抽出详情链接），详情页才是题目；`asyncio.Semaphore(QUIZ_CRAWLER_CONCURRENCY)` 控并发，单页失败不影响其它页。
+* **状态机切片**：H1 = 大主题、H2 = 中主题，H2 内按"每个 H3 一题"或"`- 题干?` 列表项一题"切分；噪声章节（写在最后 / 参考资料 / 延伸阅读等，正则 + 子串双重匹配）丢弃；只有题干的题跟随详情链接回填答案，补不到记 `no_answer_reason`；H2 区域既无 H3 也无列表时兜底把整个 H2 当作章节型题目。
+* **embedding 文本** = `大主题｜中主题｜题干`（不含答案）—— 大/中标题作分类约束让同主题向量聚拢，题干含考点关键词作语义匹配依据。
+* **去重 + 索引**：`source_hash = sha1(source_url + '#' + answer_anchor)` UNIQUE 约束做增量 upsert；`embedding` 列类型 `vector(N)`，建 HNSW 索引（`vector_cosine_ops`）+ `(big_topic, mid_topic)` 复合索引 + `to_tsvector('simple', question)` GIN 索引（备用关键词搜索）。
+* **三模式检索**：随机 `ORDER BY RANDOM()`；按主题 `(big_topic, mid_topic)` 精确 WHERE + `ordinal` 排序保原题序；自定义主题把输入文本用同一 `Embedder.embed_query` 做向量，pgvector `<=>` 余弦距离排序 + 阈值过滤取 topK。出题接口一律**不带答案**，点"显示答案"时前端再单独请求。
+* **embedding 后端二选一**：`sentence_transformers`（默认，本地 Sentence-BERT，首次下载权重 ~80MB，启动时后台 daemon 线程预热）；`openai`（复用 `OPENAI_API_KEY` 走 `text-embedding-3-small` 等）。维度由 `QUIZ_EMBEDDING_DIMENSIONS` 显式声明，校验失败直接抛错（不静默 fallback）。
+
+### 3. AI 问答助手：知识库语义检索 + LLM 综合（`ai_interviewer/app.py` + `quiz/retriever.py`）
+
+```
+用户问题
+  → retriever.search_for_qa (问题文本 → embedding → pgvector <=> 召回 topK + 阈值)
+  → _filter_qa_items (以 top1 为锚，只留分差 ≤0.05 的，最多 3 条)
+  → _build_qa_context (拼成"【片段 N】主题/问题/答案"喂 LLM)
+  → _qa_llm_stream (openai stream=True 逐 delta 产出)
+  → SSE 推 status → answer 逐 delta → references → done
+```
+
+* **检索策略**：QA 检索只用问题原文做 embedding，不复制三遍塞进 `big_topic｜mid_topic｜question` 三段（避免停用词三倍加权导致"句式像但实体不匹配"的题得分偏高，例如问 LangChain 反而召回 HNSW）。SQL 与刷题自定义主题模式同构，但多取一列 `answer_md` 用于拼上下文。
+* **LLM Prompt**：System Prompt 模板要求"优先采用你的专业知识，拿到知识库的主题不一定准确，符合思路就参考，不符合就不参考"+ 知识库参考片段；明确禁止 LLM 在回答末尾自列引用（参考例题由系统在回答下方单独展示）。
+* **"试试"模式**：`try_question={mid_topic, question}` 时跳过向量化与常规检索，走 `pick_exact_for_qa` 等值精准命中单题；LLM user 消息同时带上中标题与问题；命中失败返回空上下文 + 空引用，LLM 仍可凭自身知识作答。
+* **流式编排**：SSE generator 在线程池逐块拉同步生成器（`asyncio.to_thread(next, gen, None)`），首个 answer chunk 前先推一个空 status 清空前端进度条；同步生成器 + 异步推送的混合模型让真 LLM delta 流式可见，不靠"假流式"分块返回。
+* **复用与解耦**：问答助手与刷题助手共用 `quiz_questions` 表与 `Embedder`，但检索时维度校验、阈值、`_text_for_embedding` 拼接逻辑都走 quiz 模块同一份代码，改一处两边生效。
+
+***
+
+## 二、项目功能
 
 ### 1. AI 模拟面试
 
@@ -48,7 +107,7 @@
 
 ***
 
-## 二、部署与使用
+## 三、部署与使用
 
 ### 环境要求
 
@@ -160,62 +219,3 @@ python -m ai_interviewer.app
 | GET | `/api/quiz/question/{id}/answer` | 查看某题答案 |
 | POST | `/api/qa/ask` / `/api/qa/ask-stream` | AI 问答助手（后者 SSE 流式，支持 `try_question` 试试模式） |
 | GET | `/api/health` | 健康检查 |
-
-***
-
-## 三、底层实现简述
-
-### 1. AI 模拟面试：LangGraph 状态机（`ai_interviewer/agent/`）
-
-7 节点共享 `InterviewState`：`messages`（Memory）/ `interview_plan`（Planning）/ 简历与 JD（Context）/ 题数与当前话题（Progress）。
-
-```
-plan_interview（JD+简历规划话题与配额）
-  ├─ 无 HumanMessage → generate_question（出第一题）
-  └─ 有 HumanMessage → evaluate_response（占位） → decide_next（纯规则路由）
-                                              ├─ followup（追问）  ┐
-                                              ├─ next_topic（换话题）┴→ generate_question → END
-                                              └─ end → generate_evaluation → END
-```
-
-* **JD 驱动话题规划**：`prioritize_by_jd`（`topic_prioritizer.py`）把 JD 原文 + 岗位名喂给 LLM，要求输出 JSON `{ordered_topics, skill_importance, suggested_max_questions, topics_per_skill}`；预置 JD 按 `sha256(jd_raw_text)` 缓存到 `.jd_cache/`，下次秒读；任何失败直接抛错（不降级），错误消息对 `api_key` 脱敏后回传前端。
-* **多因子规则评分（备用规划器 `TopicPrioritizer`）**：4 层可插拔因子 — Category 基础权重（AI_AGENT_CORE > 分布式 > 数据层 > 语言框架 > 工具）+ 简历命中深度加成 + 知识库覆盖加成 + 同类聚类连续性；通过 `register_rule()` 扩展无需改核心。
-* **路由决策（`make_route_decision`）**：纯规则、不看回答质量 — 题数到顶 → end；本话题配额满且还有后续 → next_topic；末话题 → followup 深挖；剩题不足以覆盖剩余话题 → next_topic 压缩追问；默认 followup。
-* **出题上下文**：System Prompt 拼装 = 面试官人设 + JD 要求强度（required/preferred/bonus）+ 当前话题配额进度 + 简历项目段落 + 自定义面试指令；调用原生 `openai` 库（不用 langchain 的 LLM 抽象，避免 bigmodel 兼容问题）。
-* **SSE 真流式**：模块级 `_stream_cb` 回调机制 — invoke graph 前设置回调，graph 内 `_call_llm` 用 `stream=True` 逐 delta 调回调，回调把 delta 放入 `queue.Queue`，SSE generator 从队列读取推送；graph 在独立线程跑同步 `invoke`，避免阻塞 async event loop。
-* **简历解析**：`resume_parser.py` 用关键词词库 + 正则模式提取技能 / 项目 / 学历 / 年限；`_extract_project_details` 用极简状态机切项目段落（短行 + 无冒号 = 段标题），不调 LLM；PDF 按文件 SHA256 缓存解析结果到 `.resume_cache/`，避免重复解析。
-
-### 2. 刷题助手：爬取 → 切片 → 向量化 → 入库（`ai_interviewer/quiz/`）
-
-```
-爬虫.txt (种子 URL)
-  → crawler.crawl_urls (httpx + tenacity 重试 + asyncio.Semaphore 并发)
-  → BeautifulSoup 选最大正文容器 + html2text 转 Markdown (保留 H1/H2/H3/链接/表格/代码)
-  → splitter.split_markdown (纯状态机切题，不依赖 LLM)
-  → ingest._build_embeddings (sentence-transformers 批量 encode)
-  → db.bulk_upsert (sha1(source_url + '#' + anchor) 去重 upsert + HNSW 索引)
-```
-
-* **两层爬取**：种子页当目录（抽出详情链接），详情页才是题目；`asyncio.Semaphore(QUIZ_CRAWLER_CONCURRENCY)` 控并发，单页失败不影响其它页。
-* **状态机切片**：H1 = 大主题、H2 = 中主题，H2 内按"每个 H3 一题"或"`- 题干?` 列表项一题"切分；噪声章节（写在最后 / 参考资料 / 延伸阅读等，正则 + 子串双重匹配）丢弃；只有题干的题跟随详情链接回填答案，补不到记 `no_answer_reason`；H2 区域既无 H3 也无列表时兜底把整个 H2 当作章节型题目。
-* **embedding 文本** = `大主题｜中主题｜题干`（不含答案）—— 大/中标题作分类约束让同主题向量聚拢，题干含考点关键词作语义匹配依据。
-* **去重 + 索引**：`source_hash = sha1(source_url + '#' + answer_anchor)` UNIQUE 约束做增量 upsert；`embedding` 列类型 `vector(N)`，建 HNSW 索引（`vector_cosine_ops`）+ `(big_topic, mid_topic)` 复合索引 + `to_tsvector('simple', question)` GIN 索引（备用关键词搜索）。
-* **三模式检索**：随机 `ORDER BY RANDOM()`；按主题 `(big_topic, mid_topic)` 精确 WHERE + `ordinal` 排序保原题序；自定义主题把输入文本用同一 `Embedder.embed_query` 做向量，pgvector `<=>` 余弦距离排序 + 阈值过滤取 topK。出题接口一律**不带答案**，点"显示答案"时前端再单独请求。
-* **embedding 后端二选一**：`sentence_transformers`（默认，本地 Sentence-BERT，首次下载权重 ~80MB，启动时后台 daemon 线程预热）；`openai`（复用 `OPENAI_API_KEY` 走 `text-embedding-3-small` 等）。维度由 `QUIZ_EMBEDDING_DIMENSIONS` 显式声明，校验失败直接抛错（不静默 fallback）。
-
-### 3. AI 问答助手：知识库语义检索 + LLM 综合（`ai_interviewer/app.py` + `quiz/retriever.py`）
-
-```
-用户问题
-  → retriever.search_for_qa (问题文本 → embedding → pgvector <=> 召回 topK + 阈值)
-  → _filter_qa_items (以 top1 为锚，只留分差 ≤0.05 的，最多 3 条)
-  → _build_qa_context (拼成"【片段 N】主题/问题/答案"喂 LLM)
-  → _qa_llm_stream (openai stream=True 逐 delta 产出)
-  → SSE 推 status → answer 逐 delta → references → done
-```
-
-* **检索策略**：QA 检索只用问题原文做 embedding，不复制三遍塞进 `big_topic｜mid_topic｜question` 三段（避免停用词三倍加权导致"句式像但实体不匹配"的题得分偏高，例如问 LangChain 反而召回 HNSW）。SQL 与刷题自定义主题模式同构，但多取一列 `answer_md` 用于拼上下文。
-* **LLM Prompt**：System Prompt 模板要求"优先采用你的专业知识，拿到知识库的主题不一定准确，符合思路就参考，不符合就不参考"+ 知识库参考片段；明确禁止 LLM 在回答末尾自列引用（参考例题由系统在回答下方单独展示）。
-* **"试试"模式**：`try_question={mid_topic, question}` 时跳过向量化与常规检索，走 `pick_exact_for_qa` 等值精准命中单题；LLM user 消息同时带上中标题与问题；命中失败返回空上下文 + 空引用，LLM 仍可凭自身知识作答。
-* **流式编排**：SSE generator 在线程池逐块拉同步生成器（`asyncio.to_thread(next, gen, None)`），首个 answer chunk 前先推一个空 status 清空前端进度条；同步生成器 + 异步推送的混合模型让真 LLM delta 流式可见，不靠"假流式"分块返回。
-* **复用与解耦**：问答助手与刷题助手共用 `quiz_questions` 表与 `Embedder`，但检索时维度校验、阈值、`_text_for_embedding` 拼接逻辑都走 quiz 模块同一份代码，改一处两边生效。
