@@ -326,7 +326,7 @@ async def api_chat(request: Request):
 
 @app.post("/api/first-question")
 async def api_first_question(request: Request):
-    """JD 原文与项目经历直接交给 LLM，生成第一个项目的第一个主问题。"""
+    """先识别项目边界，再针对第一个项目生成第一个主问题。"""
     data = await request.json()
     session_id = data.get("session_id", "session_1")
     agent = _get_agent(session_id)
@@ -868,7 +868,7 @@ async def api_health():
 
 @app.get("/api/agent-state")
 async def api_agent_state(session_id: str = "session_1"):
-    """查看项目名称、固定轮次进度和面试状态。"""
+    """查看项目名称、下一题游标、已提交问题的后端分配记录和面试状态。"""
     agent = _get_agent(session_id)
     state = agent.get_session(session_id)
     if not state:
@@ -877,6 +877,7 @@ async def api_agent_state(session_id: str = "session_1"):
         "projects": state.get("projects", []),
         "progress": interview_progress(state),
         "question_count": state.get("question_count", 0),
+        "question_history": state.get("question_history", []),
         "is_finished": state.get("is_finished", False),
     }
 

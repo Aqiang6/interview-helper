@@ -1,46 +1,43 @@
-"""首题响应中只保留问题正文，项目名称用于后端固定计数。"""
+"""模型结构化响应的解析与项目原文边界校验。"""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 
 
-class ProjectQuestion:
-    def __init__(self, callback: Callable[[str], None] | None = None):
-        self.callback = callback
-        self.pending = ""
-        self.projects: list[str] = []
-        self.text = ""
+def parse_object(content: str) -> dict:
+    text = content.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text.partition("\n")[2].rsplit("```", 1)[0].strip()
+    try:
+        value = json.loads(text)
+    except ValueError as exc:
+        raise ValueError("模型未返回有效 JSON 对象") from exc
+    if not isinstance(value, dict):
+        raise ValueError("模型未返回有效 JSON 对象")
+    return value
 
-    def feed(self, delta: str) -> None:
-        if not self.projects:
-            self.pending += delta
-            content = self.pending.lstrip()
-            if "<projects>".startswith(content):
-                return
-            if not content.startswith("<projects>"):
-                raise ValueError("模型未返回项目名称，请重试首题")
-            end = content.find("</projects>")
-            if end < 0:
-                if len(content) > 8192:
-                    raise ValueError("模型返回的项目名称过长，请重试首题")
-                return
-            projects = json.loads(content[len("<projects>"):end])
-            if not isinstance(projects, list) or not projects or any(
-                not isinstance(name, str) or not name.strip() for name in projects
-            ):
-                raise ValueError("模型未识别到有效项目，请检查项目经历内容")
-            self.projects = [name.strip() for name in projects]
-            delta = content[end + len("</projects>"):]
-            self.pending = ""
-        if not self.text:
-            delta = delta.lstrip()
-        if delta:
-            self.text += delta
-            if self.callback is not None:
-                self.callback(delta)
 
-    def finish(self) -> None:
-        if not self.projects or not self.text.strip():
-            raise ValueError("模型未完整返回项目名称和问题，请重试首题")
+def parse_projects(content: str, source: str) -> tuple[list[str], list[str]]:
+    projects = parse_object(content).get("projects")
+    if not isinstance(projects, list) or not projects:
+        raise ValueError("模型未识别到有效项目，请检查项目经历内容")
+    names, starts = [], []
+    search_start = 0
+    for project in projects:
+        if not isinstance(project, dict):
+            raise ValueError("项目必须包含名称和项目原文")
+        name, marker = project.get("name"), project.get("start")
+        if not isinstance(name, str) or not name.strip() or not isinstance(marker, str) or not marker.strip():
+            raise ValueError("项目必须包含名称和原文起始标记")
+        name, marker = name.strip(), marker.strip()
+        start = source.find(marker, search_start)
+        if start < 0 or name.casefold() in {item.casefold() for item in names}:
+            raise ValueError("项目名称重复，或项目起始标记被改写、重叠、顺序不正确")
+        names.append(name)
+        starts.append(start)
+        search_start = start + len(marker)
+    # 按原文位置切片，避免让模型复制长经历导致截断或改写。
+    ends = [*starts[1:], len(source)]
+    details = [source[start:end].strip() for start, end in zip(starts, ends)]
+    return names, details

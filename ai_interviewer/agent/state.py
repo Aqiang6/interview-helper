@@ -1,8 +1,17 @@
-"""项目面试状态：只保存原始输入、对话和固定轮次所需的进度。"""
+"""面试状态：显式游标、当前生成的问题和已经提交的问题记录。"""
 
 from typing import TypedDict
 
 from langchain_core.messages import BaseMessage
+
+
+class QuestionRecord(TypedDict):
+    project_index: int
+    project_name: str
+    main_question_number: int
+    round_number: int
+    question: str
+    message_index: int
 
 
 class InterviewState(TypedDict):
@@ -12,9 +21,15 @@ class InterviewState(TypedDict):
     target_position: str
     jd_position_name: str
     jd_raw_text: str
-    projects: list[str]  # 首题从项目经历识别出的项目名称，按原文顺序
-    main_question: str  # 当前主问题，供两次追问保持同一个方向
-    question_count: int
+    projects: list[str]
+    project_details: list[str]
+    project_index: int  # 下一道待提交问题的项目，0 起始
+    main_question_number: int  # 1..3
+    round_number: int  # 1..3，首问 + 两次追问
+    main_question: str
+    question_history: list[QuestionRecord]
+    question_count: int  # 仅计已经成功生成并提交的问题
+    pending_question: str
     is_finished: bool
     api_key: str
     base_url: str
