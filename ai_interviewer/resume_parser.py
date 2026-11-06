@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import io
 import logging
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -243,16 +244,41 @@ def parse_pdf(file_bytes: bytes) -> ResumeData:
         return ResumeData(raw_text=f"[PDF 解析失败: {e}]")
 
 
+def _configure_tika() -> None:
+    """在导入 tika.parser 前配置下载源和持久化 JAR 目录。
+
+    tika-python 只在首次导入时读取这些环境变量；显式配置始终优先。
+    固定默认服务端版本，避免客户端升级时无意切换解析引擎。
+    """
+    version = os.environ.get("TIKA_VERSION", "3.3.2")
+    os.environ.setdefault(
+        "TIKA_SERVER_JAR",
+        "https://repo.maven.apache.org/maven2/org/apache/tika/"
+        f"tika-server-standard/{version}/tika-server-standard-{version}.jar",
+    )
+
+    # 远程客户端模式无需下载 JAR，也不需要创建本地缓存目录。
+    if os.environ.get("TIKA_CLIENT_ONLY"):
+        return
+
+    cache_dir = Path(
+        os.environ.setdefault(
+            "TIKA_PATH",
+            str(Path(__file__).resolve().parent.parent / ".tika_cache" / version),
+        )
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+
 def _extract_with_tika(file_bytes: bytes) -> str:
     """使用 Apache Tika 提取 PDF 文本
 
-    tika-python 会在首次调用时自动下载 tika-server.jar 并启动本地服务，
-    需要 Java 运行环境（JRE）。如果 Java 未安装会直接报错。
+    JAR 和校验文件保存在项目的 .tika_cache/<版本>/，已有文件会复用。
+    首次解析时自动启动本地 Java 服务，需要 Java 运行环境（JRE）。
     """
-    import tika
+    _configure_tika()
     from tika import parser as tika_parser
 
-    # tika.init_remote_only=False 表示用本地 Tika server
     parsed = tika_parser.from_buffer(file_bytes)
     text = parsed.get("content", "") or ""
     return text.strip()
@@ -340,3 +366,55 @@ def _build_summary(data: ResumeData) -> str:
     if data.projects:
         parts.append(f"项目经历: {', '.join(data.projects[:5])}")
     return "\n".join(parts) if parts else data.raw_text[:500]
+
+
+def extract_project_details(resume_text: str) -> str:
+    """从简历原文中提取项目经历段落。
+
+    规则刻意极简：从首个项目段标题开始收集，到下一个非项目段标题为止。
+    - 段标题判定：短行（≤20字）且不含冒号 —— 正文叙述行天然不会误判；
+    - 找不到项目段标题 → 返回空串（绝不兜底拼姓名/联系方式等无关内容）。
+    """
+    if not resume_text:
+        return ""
+
+    raw_lines = resume_text.split("\n")
+
+    # 项目段落起点标记
+    project_start_markers = [
+        "项目", "工作经历", "项目经验", "工作经验", "工程经历",
+        "实习经历", "职业经历", "职业经验", "相关经历",
+        "PROJECT", "EXPERIENCE",
+    ]
+
+    # 非项目段标题关键词（短行出现 → 项目段结束）
+    non_project_sections = [
+        "教育", "技能", "优势", "评价", "证书", "资质",
+        "获奖", "奖项", "荣誉", "兴趣", "爱好",
+        "自我介绍", "语言能力", "作品集", "其他",
+        "References", "Skill", "Tech Stack",
+    ]
+
+    def _is_section_header(s: str) -> bool:
+        return len(s) <= 20 and "：" not in s and ":" not in s
+
+    start = None
+    for i, line in enumerate(raw_lines):
+        stripped = line.strip()
+        if not stripped or not _is_section_header(stripped):
+            continue
+        if any(m in stripped for m in project_start_markers):
+            start = i
+            break
+    if start is None:
+        return ""
+
+    out: list[str] = []
+    for stripped in (ln.strip() for ln in raw_lines[start:]):
+        if not stripped:
+            continue
+        if _is_section_header(stripped) and any(k in stripped for k in non_project_sections):
+            break
+        out.append(stripped)
+
+    return "\n".join(out)

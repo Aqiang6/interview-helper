@@ -691,10 +691,10 @@
                             <div v-if="currentPositionName() && !positionsError && !positionsLoading" style="margin-bottom: var(--space-md); display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
                                 <span style="color: var(--text-3); font-size: var(--fs-sm);">当前目标岗位：</span>
                                 <el-tag type="primary" effect="light" size="large" style="font-size: var(--fs-base); padding: 4px 14px;">{{ currentPositionName() }}</el-tag>
-                                <el-tag v-if="currentPositionMeta() && currentPositionMeta().maxQ" type="success" effect="plain" size="default">约 {{ currentPositionMeta().maxQ }} 题</el-tag>
+                                <el-tag type="success" effect="plain" size="default">每个项目 9 次提问</el-tag>
                                 <el-tag v-if="currentPositionMeta() && currentPositionMeta().req" type="warning" effect="plain" size="default">{{ currentPositionMeta().req }} 项硬性要求</el-tag>
                             </div>
-                            <el-form-item label="请选择目标岗位（决定提问优先级和题数上限）">
+                            <el-form-item label="请选择目标岗位（结合 JD 原文进行项目提问）">
                                 <div v-if="positionsError && !positionsLoading" style="display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;">
                                     <el-result icon="error" :title="'加载失败'" :sub-title="positionsError" style="flex: 1; padding: 0; margin: 0;">
                                         <template #extra>
@@ -714,7 +714,7 @@
                                         <el-option
                                             v-for="p in positions"
                                             :key="p.id || p.name"
-                                            :label="`${p.name} · ${p.location || '深圳'} · ${p.requirements_count || 0} 项硬性要求 · ${p.suggested_max_questions || (p.id === 'ai_fullstack_engineer' || p.id === 'agent_dev_engineer' ? 18 : 14)} 题`"
+                                            :label="`${p.name} · ${p.location || '深圳'} · 每个项目 9 次提问`"
                                             :value="p.id || p.name"
                                         />
                                     </el-select>
@@ -738,9 +738,9 @@
                     <div class="report-card" v-if="resumeParsed" style="margin-top: var(--space-lg);">
                         <div class="report-card-title">传给 LLM 的项目段落</div>
                         <p style="color: var(--text-3); font-size: var(--fs-sm); margin-bottom: var(--space-md);">
-                            面试开始时，下面这段文本会注入到 Prompt 的占位符 <code style="font-family:var(--font-mono); font-size:12px; padding:2px 6px; border-radius:6px; background:var(--bg-soft); border:0.5px solid var(--border);">resume_projects</code> 中，LLM 据此对你做项目深挖。可自行编辑裁剪。
+                            面试官会结合 JD 原文，逐个项目提出 3 个主问题，每个主问题再追问 2 次，共 9 次提问。请确认下方项目经历完整，可自行编辑。
                         </p>
-                        <div class="info-label" style="margin-bottom: var(--space-xs);">项目段落（可编辑，注入 Prompt 中的 resume_projects）</div>
+                        <div class="info-label" style="margin-bottom: var(--space-xs);">项目经历（可编辑）</div>
                         <el-input
                             v-model="resumeProjects"
                             type="textarea"
@@ -1280,7 +1280,6 @@ function main() {
                 streaming: false,
                 interviewerStatus: 'idle',
                 finished: false,
-                evaluation: null,
                 form: reactive({
                     apiKey: localStorage.getItem('ai_api_key') || '',
                     baseUrl: localStorage.getItem('ai_base_url') || 'https://api.openai.com/v1',
@@ -1417,8 +1416,7 @@ function main() {
                 if (!state.targetPosition || !state.positions.length) return null;
                 const f = state.positions.find(p => p.id === state.targetPosition || p.name === state.targetPosition);
                 if (!f) return null;
-                const maxQ = f.suggested_max_questions || (f.id === 'ai_fullstack_engineer' || f.id === 'agent_dev_engineer' ? 18 : 14);
-                return { req: f.requirements_count || 0, bonus: f.bonus_count || 0, maxQ, location: f.location || '深圳' };
+                return { req: f.requirements_count || 0, bonus: f.bonus_count || 0, location: f.location || '深圳' };
             }
             async function loadSavedResumes() {
                 try {
@@ -1527,7 +1525,6 @@ function main() {
                         resume_text: state.resume.raw_text || state.resumeText,
                         resume_projects: state.resumeProjects || undefined,
                         candidate_name: state.resume.name,
-                        skills: state.resume.skills,
                         session_id: 'session_1',
                     };
                     if (state.jdMode === 'custom') {
@@ -1547,7 +1544,6 @@ function main() {
                         state.chatMessages = [];
                         state.userAnswer = '';
                         state.finished = false;
-                        state.evaluation = null;
                         state.loadingStatus = '正在生成面试问题...';
                         state.interviewerStatus = 'typing';
                         await getFirstQuestion();
@@ -1703,9 +1699,6 @@ function main() {
                 state.finished = true;
                 state.interviewerStatus = 'idle';
                 state.interviewStep = 4;
-                // 取消综合评价（用户明确：Step 4 只要再来一次，不要综合评价）
-                // 保留 evaluation 字段为 null 即可，UI 端不再渲染评分/评价。
-                state.evaluation = null;
             }
             async function restartInterview() {
                 saveConfig();
@@ -1724,7 +1717,6 @@ function main() {
                         resume_text: state.resume.raw_text || state.resumeText,
                         resume_projects: state.resumeProjects || undefined,
                         candidate_name: state.resume.name,
-                        skills: state.resume.skills,
                         session_id: 'session_1',
                         custom_prompt: state.retryPrompt || undefined,
                     };
@@ -1745,7 +1737,6 @@ function main() {
                         state.chatMessages = [];
                         state.userAnswer = '';
                         state.finished = false;
-                        state.evaluation = null;
                         state.loadingStatus = '正在生成面试问题...';
                         state.interviewerStatus = 'typing';
                         await getFirstQuestion();
@@ -1769,7 +1760,6 @@ function main() {
                 state.chatMessages = [];
                 state.userAnswer = '';
                 state.finished = false;
-                state.evaluation = null;
                 state.streaming = false;
                 state.interviewerStatus = 'idle';
             }
@@ -1784,7 +1774,6 @@ function main() {
                 state.chatMessages = [];
                 state.userAnswer = '';
                 state.finished = false;
-                state.evaluation = null;
                 state.streaming = false;
                 state.interviewerStatus = 'idle';
             }

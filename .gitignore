@@ -25,3 +25,9 @@ tesseract-installer.exe
 
 # Resume cache
 ai_interviewer/.resume_cache/
+
+# Tika runtime JAR and checksum cache
+.tika_cache/
+
+# Launcher lifecycle lock
+.launcher.lock
