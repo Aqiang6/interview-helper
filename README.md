@@ -16,40 +16,26 @@
 
 ### 1. AI 模拟面试：LangGraph 状态机（`ai_interviewer/agent/`）
 
-图节点共享 `InterviewState`：对话历史、面试计划、简历与 JD、题数与当前话题。会话保存在 Python 进程内存中，重启服务后不会恢复。
+图节点共享 `InterviewState`：JD 原文、解析出的项目经历、对话历史、项目名称和已提问数。会话保存在 Python 进程内存中，重启后不会恢复。
 
 ```text
-/api/start-interview → 按岗位名 + JD 规划话题与配额（优先读缓存）
-
-每轮运行图：plan_interview（已有计划则跳过）
-  ├─ 无 HumanMessage → generate_question（出第一题）
-  └─ 有 HumanMessage → evaluate_response（直通占位） → decide_next（按配额与题数路由）
-                                              ├─ followup（追问）  ┐
-                                              ├─ next_topic（换话题）┴→ generate_question → END
-                                              └─ end → generate_evaluation（仅标记结束）→ END
+/api/start-interview → 保存 JD 原文与项目经历，立即返回 ready
+首题：LLM 在同一次调用中识别项目名称并提出第一个项目的第一个主问题
+后续：每项目 3 个主问题 × 每题 3 轮（首问 + 2 次追问）= 9 次提问
+答完一个项目的第 9 问 → 下一个项目
+答完最后一个项目的第 9 问 → finish_interview → 结束
 ```
 
-* **JD 驱动话题规划**：`prioritize_by_jd`（`topic_prioritizer.py`）把 JD 原文 + 岗位名传给 LLM，要求输出 JSON `{ordered_topics, skill_importance, suggested_max_questions, topics_per_skill}`。当前规划调用没有传入简历技能或简历摘要；简历项目用于后续出题。预置和自定义 JD 都按 JD 原文哈希缓存到 `ai_interviewer/.jd_cache/`；规划调用失败会中止启动，不切换到旧的规则排序器。
-* **路由决策（`make_route_decision`）**：纯规则、不看回答质量 — 题数到顶 → end；本话题配额满且还有后续 → next_topic；末话题 → followup 深挖；剩题不足以覆盖剩余话题 → next_topic 压缩追问；默认 followup。
-* **回答与结束处理**：候选人回答直接追加到 `messages`，供下一轮出题参考；`evaluate_response` 返回空更新，不调用 LLM 分析或打分。`generate_evaluation` 沿用旧名称，实际只设置 `is_finished` 并记录 `question_count`，前端结束页提供“再来一次”入口。
-* **出题上下文**：System Prompt 拼装 = 面试官人设 + JD 要求强度（required/preferred/bonus）+ 当前话题配额进度 + 简历项目段落 + 自定义面试指令；调用原生 `openai` 库（不用 langchain 的 LLM 抽象，避免 bigmodel 兼容问题）。
-* **SSE 真流式**：模块级 `_stream_cb` 回调机制 — invoke graph 前设置回调，graph 内 `_call_llm` 用 `stream=True` 逐 delta 调回调，回调把 delta 放入 `queue.Queue`，SSE generator 从队列读取推送；graph 在独立线程跑同步 `invoke`，避免阻塞 async event loop。
-* **简历解析**：`resume_parser.py` 用关键词词库 + 正则模式提取技能 / 项目 / 学历 / 年限；`_extract_project_details` 用段标题规则提取项目经历，不调 LLM，提取结果可在前端编辑。PDF 先用 Tika 提取文本，文本有效性过低时尝试 OCR；按文件 SHA256 缓存文本解析结果到 `ai_interviewer/.resume_cache/`，不对简历做向量化。
+* **输入与提示词**：预置岗位和自定义岗位都直接将 JD 原文交给出题 LLM，结合项目经历和回答历史提问。实际提示词见 `ai_interviewer/agent/prompts.py`，不单独调用模型生成面试计划。
+* **固定轮数**：后端按已成功生成的题数计算项目、主问题和轮次，模型负责问题内容。每个项目固定 3 个主问题，每题共 3 轮，所有项目结束前不会被其他题数上限截断。
+* **项目识别**：首题响应先返回项目名称标记，后端用于计数并从 SSE 中剥离，页面只显示问题正文。项目按经历原文顺序进行，不另建技术话题列表。
+* **SSE 真流式**：每个请求使用独立回调和队列；同步图和模型调用在线程中执行，不阻塞其他请求。生成失败不推进轮次，最后一问答完后标记结束，页面提供“再来一次”入口。
+* **简历解析**：`resume_parser.py` 使用关键词和正则提取技能等信息，`extract_project_details` 按段标题提取项目经历，可在前端编辑；项目段落不再截断到 2000 字。PDF 使用 Tika，文本有效性过低时尝试 OCR；按文件 SHA256 缓存解析结果，不对简历向量化。
 
 ### 2. 刷题助手：爬取 → 切片 → 向量化 → 入库（`ai_interviewer/quiz/`）
 
-**爬虫方案的由来**：一开始不知道 JavaGuide 的[开源仓库](https://github.com/Snailclimb/JavaGuide)中已经提供了 Markdown 源文档，因此选择了爬取网页、再转为 Markdown 的方案。后来发现可直接获取仓库里的 `.md` 文档，再做切题、向量化和入库，其实无需爬虫；当前项目保留的是下述爬虫实现。
+**题库来源**：JavaGuide 的[开源仓库](https://github.com/Snailclimb/JavaGuide)已经提供了 Markdown 源文档，可直接获取其中的 `.md` 文件作为题库材料，再按标题结构做状态机切片、向量化和入库，无需先爬取网页并转换为 Markdown。
 
-```
-爬虫.txt (种子 URL)
-  → crawler.crawl_urls (httpx + tenacity 重试 + asyncio.Semaphore 并发)
-  → BeautifulSoup 选最大正文容器 + html2text 转 Markdown (保留 H1/H2/H3/链接/表格/代码)
-  → splitter.split_markdown (纯状态机切题，不依赖 LLM)
-  → ingest.embed_and_upsert (sentence-transformers 批量 encode)
-  → db.bulk_upsert (按来源 URL + 答案锚点去重入库)
-```
-
-* **两层爬取**：种子页和跟进的详情页都会切题；种子页上只有题干的题，尝试从详情页匹配并补齐答案，详情页不再递归跟进。详情页请求通过 `asyncio.Semaphore(QUIZ_CRAWLER_CONCURRENCY)` 控并发，同次任务共享抓取缓存；单页失败记录到报告中。
 * **状态机切片**：H1 = 大主题、H2 = 中主题，H2 内按“每个 H3 一题”或带题目特征的列表项切分；噪声章节（写在最后 / 参考资料 / 延伸阅读等）丢弃。没有 H3 或有效题目列表的章节直接跳过，已移除“整节作为一道题”的兜底。补不到答案时，将原因和原文链接写入答案占位文案。
 * **embedding 文本** = `大主题｜中主题｜题干`（不含答案）—— 大/中标题作分类约束让同主题向量聚拢，题干含考点关键词作语义匹配依据。
 * **去重 + 索引**：爬取后先按归一化题干跨页去重，优先保留有答案且内容更长的版本。入库按来源 URL + 答案锚点的 SHA1 值去重，已有记录在文本内容变化时更新；`embedding` 列类型为 `vector(N)`，建 HNSW 余弦索引及主题索引。
@@ -81,9 +67,9 @@
 | 功能 | 说明 |
 | --- | --- |
 | 简历解析 | 上传 PDF 或粘贴文本，提取姓名 / 技能列表 / 项目经历段落；PDF 按文件 SHA256 缓存，重复上传复用解析结果 |
-| JD 驱动的提问规划 | 预置腾讯校招岗位或粘贴自定义 JD，LLM 输出 `ordered_topics + skill_importance(required/preferred/bonus) + suggested_max_questions + topics_per_skill`，两类 JD 都缓存规划结果 |
-| 多轮对话面试 | 出题 → 接收回答 → 按话题配额与题数追问 / 换话题 / 结束，问题通过 SSE 流式推送 |
-| 会话内上下文 | 维护本轮对话历史 + 面试计划 + 当前话题进度，出题时传入历史消息；服务重启后会话不保留 |
+| 项目提问 | 预置或自定义 JD 原文 + 项目经历直接交给 LLM，针对项目展开提问 |
+| 固定轮次面试 | 每项目 3 个主问题，每题首问 + 2 次追问，共 9 次提问；问题通过 SSE 流式推送 |
+| 会话内上下文 | 保存对话历史、当前主问题和项目进度，追问参考上一轮回答；重启后会话不保留 |
 | 面试结束与重练 | 答完最后一道题后标记结束，前端展示“再来一次”入口；回答质量由使用者自行复盘 |
 | 自定义面试指令 | "再来一次"时填写定向调整需求，注入面试官 System Prompt |
 
@@ -120,6 +106,8 @@
 * PostgreSQL 14+，安装 **pgvector 扩展**
 * 一个 OpenAI 兼容的 LLM API（面试 Agent 和问答助手用；刷题模块用本地 sentence-transformers embedding 模型，不需要 Key）
 * PDF 简历解析需要 Java 运行环境供 Tika 使用；扫描件 OCR 还需 Tesseract（含中英文语言包）和 Poppler。也可以直接粘贴简历文本。
+
+PDF 解析使用 Tika Server，首次解析时由 Python 自动启动本地 Java 服务，后续请求复用。默认服务端版本为 3.3.2，JAR 与校验文件从 Maven 官方 HTTPS 仓库下载到项目的 `.tika_cache/3.3.2/`，保留后无需重复下载，也不受系统临时目录清理影响。可在 `.env` 中设置 `TIKA_PATH` 使用已有缓存目录（内含 `tika-server.jar` 和 `tika-server.jar.md5`），或通过 `TIKA_SERVER_JAR` 指定下载地址 / 本地 `file:///` 地址；本地 JAR 旁需保留同名 `.jar.md5` 文件。修改配置后重启应用，示例见 `.env.example`。
 
 ### 1. 安装依赖
 
@@ -175,7 +163,7 @@ python -m ai_interviewer.quiz.ingest
 ### 4. 启动应用
 
 ```bash
-# 方式一：Windows 双击（尝试启动本地 PostgreSQL + 启动 Web 应用 + 打开浏览器）
+# 方式一：Windows 双击（启动 PostgreSQL + Web 应用，健康检查通过后打开浏览器）
 start_app.bat
 
 # 方式二：命令行
@@ -183,6 +171,10 @@ python -m ai_interviewer.app
 ```
 
 启动后访问 <http://localhost:8000>（FastAPI 同时在 `/docs` 提供 OpenAPI 交互文档）。
+
+`start_app.bat` 最多等待后端就绪 60 秒；后端提前退出或等待超时时会显示错误并保留窗口，便于查看启动日志。
+
+启动时通过 `pg_isready` 确认 PostgreSQL 接受连接，按 Ctrl+C 退出时先停止网页服务，再通过 `pg_ctl stop` 正常关闭数据库。重复双击会复用已启动的服务；修改代码后需先退出旧的启动窗口再启动。题库查询在线程池执行，数据库连接和连接池等待均设为 5 秒超时，避免题库故障阻塞面试接口。
 
 `start_app.bat` 中的 `PG_HOME`、`PG_DATA` 当前写的是本机路径，使用前需按自己的 PostgreSQL 安装目录和数据目录调整，或自行启动数据库。
 
@@ -193,8 +185,8 @@ python -m ai_interviewer.app
 1. 顶部切换到"面试助手"页，在"模型设置"填写 `API Key / Base URL / 模型名`；
 2. 上传简历 PDF（或粘贴文本）→ 自动解析候选人画像，已上传过的 PDF 直接从缓存列表选用；
 3. 选择预置岗位（`/api/positions`）或粘贴自定义 JD，确认并按需编辑简历项目段落；
-4. 点击“开始面试”→ 后端读取缓存或调用 LLM 生成话题规划，再给出第一题（SSE 流式）；
-5. 在对话框逐题作答，Agent 按配额 + 题数自然追问或切换话题；
+4. 点击“开始面试”→ 立即创建会话，LLM 结合 JD 原文与项目经历生成第一题（SSE 流式）；
+5. 在对话框逐题作答，每个项目完成 3 个主问题、每题 3 轮后进入下一个项目；
 6. 答完最后一道题后结束，自行复盘本轮回答；可点“再来一次”填定向调整需求重开。
 
 **刷题助手：**
@@ -222,8 +214,7 @@ python -m ai_interviewer.app
 | POST | `/api/start-interview` | 创建面试会话（简历 + JD + 岗位） |
 | POST | `/api/first-question-stream` | 获取第一题（SSE 真流式） |
 | POST | `/api/chat` / `/api/chat-stream` | 提交回答（后者 SSE 流式） |
-| GET | `/api/evaluation` | 兼容保留：标记会话结束并返回题数；不生成评分或评价报告，当前前端不调用 |
-| GET | `/api/agent-state` | 查看 LangGraph Agent 内部状态（计划 + 进度） |
+| GET | `/api/agent-state` | 查看项目名称与固定轮次进度 |
 | GET | `/api/quiz/stats` / `/api/quiz/topics` | 题库统计 / 主题树 |
 | POST | `/api/quiz/ingest` | 触发一次爬取与增量入库 |
 | POST | `/api/quiz/question` | 出题（`mode=random/by_topic/custom`） |

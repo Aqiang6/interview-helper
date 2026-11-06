@@ -2,8 +2,7 @@
 
 结构化数据供：
 1. 前端选岗位的下拉列表（/api/positions）
-2. LLM 动态生成话题优先级（根据不同岗位 JD 的要求强度）
-3. 路由决策：回答质量 × JD 要求强度的二维决策表
+2. 将 JD 原文直接提供给项目面试 LLM
 """
 
 from __future__ import annotations
@@ -257,63 +256,5 @@ def create_custom_position(name: str, jd_text: str) -> JobPosition:
         description=description,
         requirements=requirements,
         bonuses=bonuses,
-        raw_text=jd_text.strip(),
+        raw_text=jd_text,
     )
-
-
-# ═══════════════════════════════════════════
-#  LLM 驱动优先级排序 Prompt（JD-aware）
-# ═══════════════════════════════════════════
-
-PRIORITY_SYSTEM_PROMPT = """你是面试话题规划专家。根据目标岗位的 JD（岗位描述+要求+加分项）、候选人简历技能列表、候选人简历摘要，
-
-生成【按面试优先级从高到低排序的话题列表】，并标注每个话题在当前 JD 中的要求强度。
-
-## 话题来源（最重要的规则）
-ordered_topics 里的每个话题名**必须直接摘自 JD 原文中明确提到的技术名词**：
-- JD 写了"熟悉RAG技术"才能有"RAG"话题；JD 通篇没提的语言/框架/中间件**一律禁止出现**
-- 话题名优先直接摘取 JD 原词（如 JD 写"Agent原理与架构"就摘"Agent原理与架构"），不要自己概括编造新词
-- 下面的 JSON 示例里所有话题名只是占位符，与你的输出内容无关，严禁照抄
-- 候选人技能列表只是参考（用于判断候选人会什么），**不是话题来源**——候选人会但 JD 没提的技能不列
-
-输出必须是严格的 JSON，格式（注意：`<话题N>` 只是占位符，必须用「JD 原文里真实出现的技术名词」替换，严禁原样输出占位符）：
-```json
-{
-  "ordered_topics": ["<话题1>", "<话题2>", "<话题3>", "<话题4>", "<话题5>"],
-  "skill_importance": {
-    "<话题1>": "required",
-    "<话题2>": "required",
-    "<话题3>": "preferred",
-    "<话题4>": "preferred",
-    "<话题5>": "bonus"
-  },
-  "suggested_max_questions": 18,
-  "topics_per_skill": {
-    "required": 4,
-    "preferred": 3,
-    "bonus": 2
-  }
-}
-```
-
-### 规则（必须严格遵守）
-1. **ordered_topics 只从 JD 原文提到的技术中摘取**，宁缺毋滥，JD 没提就不列；每个话题必须能在 JD 原文中找到出处
-2. **skill_importance 的判定必须能对应到 JD 原文**：
-   - required：JD 岗位要求里明确写"必须/熟练掌握/精通"等强要求的核心技能
-   - preferred：JD 里写"了解/熟悉"或偏工程实践的能力
-   - bonus：只出现在 JD 加分项里的技能
-   - 判不准时倾向 preferred 而不是 required，不要虚报 required
-   - **required 话题最多 8 个**：只挑 JD 核心能力，超过 8 个时把最弱的挪到 preferred
-3. **面试优先级排序依据：**
-   - 第1层：required 技能 → 最优先问；bonus 技能 → 最末
-   - 第2层：同一强度档里，简历有项目经验/线上经验的先问（简历摘要里高频出现的先）
-   - 第3层：同大类话题聚类在一起（相关的都排一段，别东一个西一个）
-4. **suggested_max_questions** 根据 JD 技术密度决定：
-   - JD 要求又多又深（核心技能≥5 项）：17-20 题
-   - JD 要求适中：13-16 题
-5. **topics_per_skill**：同一强度档每题建议问几轮深度追问
-   - required：4 轮（追问深一点，这是核心指标）
-   - preferred：3 轮
-   - bonus：2 轮（点到为止）
-
-只输出 JSON，不要任何其他文字、解释、markdown 代码块标记。"""

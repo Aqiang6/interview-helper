@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -124,29 +125,32 @@ class QuizQuestion:
 
 _engine: Optional[Engine] = None
 _session_factory: Optional[sessionmaker] = None
+_engine_lock = threading.Lock()
 
 
 def get_engine() -> Engine:
     """懒加载单例 Engine（psycopg3 同步连接）。"""
     global _engine, _session_factory
     if _engine is None:
-        settings = get_settings()
-        dsn = settings.postgres_dsn
-        if not dsn:
-            raise RuntimeError("未配置 POSTGRES_DSN，请在 .env 中设置后再使用刷题助手")
-        # psycopg3：pipeline 可减少往返；pool_pre_ping 保活；pool_recycle 避免连接被 PG 侧超时断开
-        _engine = create_engine(
-            dsn,
-            future=True,
-            pool_pre_ping=True,
-            pool_recycle=1800,
-            pool_size=10,
-            max_overflow=20,
-            connect_args={
-                # psycopg[binary] kwargs：自动解码 bytes->str 等默认即可
-            },
-        )
-        _session_factory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
+        with _engine_lock:
+            if _engine is None:
+                dsn = get_settings().postgres_dsn
+                if not dsn:
+                    raise RuntimeError("未配置 POSTGRES_DSN，请在 .env 中设置后再使用刷题助手")
+                engine = create_engine(
+                    dsn,
+                    future=True,
+                    pool_pre_ping=True,
+                    pool_recycle=1800,
+                    pool_size=10,
+                    max_overflow=20,
+                    pool_timeout=5,
+                    # 端口被残留进程占用时也要及时失败，不能无限等待数据库握手。
+                    connect_args={"connect_timeout": 5},
+                )
+                # 线程池会并发调用接口，发布 Engine 前先准备好对应的 Session 工厂。
+                _session_factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+                _engine = engine
     return _engine
 
 

@@ -22,9 +22,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ai_interviewer.agent import InterviewGraphAgent
-from ai_interviewer.agent.topic_prioritizer import prioritize_by_jd
+from ai_interviewer.agent.nodes import QUESTIONS_PER_PROJECT, interview_progress
 from ai_interviewer.jd_engine.jd_loader import create_custom_position, get_position, list_positions
-from ai_interviewer.resume_parser import parse_pdf, parse_text
+from ai_interviewer.resume_parser import extract_project_details, parse_pdf, parse_text
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +149,7 @@ async def api_parse_resume(request: Request):
     data = await request.json()
     text = data.get("text", "")
     rd = parse_text(text)
-    from ai_interviewer.agent.nodes import _extract_project_details
-    llm_projects = _extract_project_details(rd.raw_text)
+    llm_projects = extract_project_details(rd.raw_text)
     return {
         "raw_text": rd.raw_text,
         "name": rd.name,
@@ -179,8 +178,7 @@ async def api_parse_pdf(request: Request):
         raw_sample = rd.raw_text[:500]
         logger.info(f"PDF 原始文本长度: {len(rd.raw_text)}")
         logger.info(f"PDF 原始文本repr(前200字符): {repr(raw_sample[:200])}")
-        from ai_interviewer.agent.nodes import _extract_project_details
-        llm_projects = _extract_project_details(rd.raw_text)
+        llm_projects = extract_project_details(rd.raw_text)
         return {
             "raw_text": rd.raw_text,
             "name": rd.name,
@@ -210,13 +208,12 @@ async def api_list_saved_resumes():
 @app.get("/api/resumes/{hash}")
 async def api_get_saved_resume(hash: str):
     """获取单条已保存简历的完整数据（含 raw_text），供前端选中后直接开始面试"""
-    from ai_interviewer.agent.nodes import _extract_project_details
     from ai_interviewer.resume_cache import get_cached_by_hash
     cached = get_cached_by_hash(hash)
     if cached is None:
         raise HTTPException(status_code=404, detail="简历不存在或缓存已被清除")
     result = cached.to_dict()
-    result["llm_projects"] = _extract_project_details(cached.raw_text)
+    result["llm_projects"] = extract_project_details(cached.raw_text)
     return result
 
 
@@ -248,7 +245,7 @@ async def api_start_interview(request: Request):
     candidate_name = data.get("candidate_name", "")
     target_position = (data.get("target_position") or "").strip()
     custom_jd_name = (data.get("custom_jd_name") or "").strip()
-    custom_jd_text = (data.get("custom_jd_text") or "").strip()
+    custom_jd_text = data.get("custom_jd_text") or ""
     custom_prompt = (data.get("custom_prompt") or "").strip()
     resume_projects = (data.get("resume_projects") or "").strip()
 
@@ -260,7 +257,7 @@ async def api_start_interview(request: Request):
     # ── JD 解析：预置岗位 / 自定义 JD ──
     jd_position_name: str = ""
     jd_raw_text: str = ""
-    if custom_jd_name and custom_jd_text:
+    if custom_jd_name and custom_jd_text.strip():
         # 自定义 JD 优先
         try:
             pos = create_custom_position(custom_jd_name, custom_jd_text)
@@ -285,77 +282,20 @@ async def api_start_interview(request: Request):
 
     session_id = data.get("session_id") or "session_1"
     agent = InterviewGraphAgent(api_key=api_key, base_url=base_url, model=model)
-    _sessions[session_id] = agent
-
-    agent.create_session(
-        session_id=session_id,
-        resume_text=resume_text,
-        candidate_name=candidate_name,
-        target_position=target_position,
-        jd_position_name=jd_position_name,
-        jd_raw_text=jd_raw_text,
-        custom_prompt=custom_prompt,
-        resume_projects=resume_projects,
-    )
-
-    # ── 生成面试计划（在线程池跑同步 openai 调用，避免阻塞 async event loop）──
     try:
-        jd_result = await asyncio.to_thread(
-            prioritize_by_jd,
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            jd_position_name=jd_position_name or "通用技术岗",
-            jd_raw_text=jd_raw_text,
+        agent.create_session(
+            session_id=session_id, resume_text=resume_text, candidate_name=candidate_name,
+            target_position=target_position, jd_position_name=jd_position_name,
+            jd_raw_text=jd_raw_text, custom_prompt=custom_prompt, resume_projects=resume_projects,
         )
-        sorted_topics = list(jd_result.ordered_topics) or ["技术基础"]
-        topic_aliases = {canonical: original for original, canonical in jd_result.ordered_aliases}
-        if not topic_aliases and sorted_topics:
-            topic_aliases = {t: t for t in sorted_topics}
-        topic_question_counter = {t: 0 for t in sorted_topics}
-        req_count = sum(1 for v in (jd_result.skill_importance or {}).values() if v == "required")
-
-        interview_plan = {
-            "topics": sorted_topics,
-            "topic_aliases": topic_aliases,
-            "current_topic_index": 0,
-            "phase": "deep_dive" if req_count >= 2 else "basics",
-            "questions_per_topic": 3,
-            "skill_importance": dict(jd_result.skill_importance or {}),
-            "topics_per_skill": dict(jd_result.topics_per_skill or {}),
-            "topic_question_counter": topic_question_counter,
-            "position_id": target_position,
-            "position_name": jd_position_name,
-            "priority_source": jd_result.source,
-        }
-        max_questions_final = int(jd_result.suggested_max_questions or 15)
-        current_topic_final = sorted_topics[0] if sorted_topics else "技术基础"
-        agent._sessions[session_id].update({
-            "interview_plan": interview_plan,
-            "max_questions": max_questions_final,
-            "current_topic": current_topic_final,
-        })
-        logger.info(
-            "[start-interview] 面试计划生成完成(source=%s): position=%s max_q=%d required=%d topics=%s",
-            jd_result.source, jd_position_name or "通用", max_questions_final, req_count, sorted_topics[:8]
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("[start-interview] 面试计划生成失败")
-        raise HTTPException(status_code=400, detail=str(e))
-
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _sessions[session_id] = agent
     return {
         "session_id": session_id,
         "status": "ready",
-        "plan_source": getattr(jd_result, "source", "llm"),
-        "position": {
-            "id": target_position,
-            "name": jd_position_name,
-        } if target_position else None,
-        "max_questions": max_questions_final,
-        "topics_count": len(sorted_topics),
-        "required_count": req_count,
+        "position": {"id": target_position, "name": jd_position_name} if target_position else None,
+        "questions_per_project": QUESTIONS_PER_PROJECT,
     }
 
 
@@ -386,154 +326,68 @@ async def api_chat(request: Request):
 
 @app.post("/api/first-question")
 async def api_first_question(request: Request):
-    """获取第一个面试问题
-
-    面试计划已在 start-interview 同步生成，直接跑 graph 出第一题。
-    """
+    """JD 原文与项目经历直接交给 LLM，生成第一个项目的第一个主问题。"""
     data = await request.json()
     session_id = data.get("session_id", "session_1")
-
     agent = _get_agent(session_id)
-
+    if not agent.get_session(session_id):
+        raise HTTPException(status_code=404, detail="面试会话不存在")
     try:
         response = await agent.get_first_question(session_id)
-    except RuntimeError as e:
-        msg = str(e) or ""
-        # JD 话题排序失败、LLM 连不上等"启动前置条件不满足"一律 400 抛给前端弹窗
-        if "JD 话题排序失败" in msg or "面试无法开始" in msg:
-            logger.error("首题启动前置失败: %s", msg)
-            raise HTTPException(status_code=400, detail=msg) from e
-        # 其他 RuntimeError 走兜底字符串（理论上不会走到）
-        logger.exception("获取首题 RuntimeError")
-        response = f"（系统提示：生成问题时出错，请检查 API 配置。错误：{type(e).__name__}: {e}）"
-    except Exception as e:
+    except Exception as exc:
         logger.exception("获取首题失败")
-        response = f"（系统提示：生成问题时出错，请检查 API 配置。错误：{type(e).__name__}: {e}）"
-
+        raise HTTPException(status_code=502, detail=f"生成问题失败：{exc}") from exc
     session = agent.get_session(session_id)
-    return {
-        "response": response,
-        "finished": session.get("is_finished", False) if session else False,
-        "question_count": session.get("question_count", 0) if session else 0,
-    }
+    return {"response": response, "finished": session["is_finished"], "question_count": session["question_count"]}
 
 
 @app.post("/api/first-question-stream")
 async def api_first_question_stream(request: Request):
-    """获取第一个面试问题（SSE 真流式，逐 delta 推送）
-
-    通过模块级 _stream_cb 回调实现：在调 get_first_question 前设置回调，
-    generate_question 节点内部的 _call_llm 会用 stream=True 逐 delta 调回调，
-    回调把 delta 放入 queue，SSE generator 从 queue 读取推送。
-    """
-    import queue as _queue
-    from ai_interviewer.agent import nodes as _nodes
-
     data = await request.json()
     session_id = data.get("session_id", "session_1")
-
     agent = _get_agent(session_id)
+    if not agent.get_session(session_id):
+        raise HTTPException(status_code=404, detail="面试会话不存在")
+    return StreamingResponse(_stream_response(agent, session_id), media_type="text/event-stream")
 
-    q: _queue.Queue = _queue.Queue()
-    _sentinel = object()
 
-    def _cb(delta: str):
-        q.put(delta)
-
-    _nodes._stream_cb = _cb
-
+def _stream_response(agent: InterviewGraphAgent, session_id: str, answer: str | None = None):
+    """每个请求独立的流式回调；只推送问题正文和结束状态。"""
     async def _stream():
+        queue = asyncio.Queue()
+        sentinel = object()
+        loop = asyncio.get_running_loop()
+
+        def callback(delta: str):
+            loop.call_soon_threadsafe(queue.put_nowait, delta)
+
+        async def run():
+            try:
+                if answer is None:
+                    await agent.get_first_question(session_id, stream_callback=callback)
+                else:
+                    await agent.answer_and_ask(session_id, answer, stream_callback=callback)
+            except Exception as exc:
+                await queue.put(exc)
+            finally:
+                await queue.put(sentinel)
+
+        task = asyncio.create_task(run())
         try:
-            # 在线程里跑 get_first_question（同步阻塞），回调逐 delta 入队
-            def _run():
-                try:
-                    loop = asyncio.new_event_loop()
-                    result = loop.run_until_complete(agent.get_first_question(session_id))
-                    loop.close()
-                    return result
-                except Exception as e:
-                    q.put(e)
-                    return None
-                finally:
-                    q.put(_sentinel)
-
-            import threading
-            t = threading.Thread(target=_run, daemon=True)
-            t.start()
-
             while True:
-                item = await asyncio.to_thread(q.get)
-                if item is _sentinel:
+                item = await queue.get()
+                if item is sentinel:
                     break
                 if isinstance(item, Exception):
-                    yield f"data: {json.dumps({'type': 'error', 'error': f'生成问题失败: {type(item).__name__}: {item}'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'error': f'生成问题失败: {item}'}, ensure_ascii=False)}\n\n"
                     return
                 yield f"data: {json.dumps({'type': 'answer', 'content': item}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            logger.exception("首题流式生成失败")
-            yield f"data: {json.dumps({'type': 'error', 'error': f'生成问题失败: {type(e).__name__}: {e}'}, ensure_ascii=False)}\n\n"
-            return
+            session = agent.get_session(session_id)
+            yield f"data: {json.dumps({'type': 'done', 'finished': session['is_finished']}, ensure_ascii=False)}\n\n"
         finally:
-            _nodes._stream_cb = None
-        session = agent.get_session(session_id)
-        finished = session.get("is_finished", False) if session else False
-        yield f"data: {json.dumps({'type': 'done', 'finished': finished}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(_stream(), media_type="text/event-stream")
-
-
-def _stream_response(agent: InterviewGraphAgent, session_id: str, answer: str):
-    """流式返回面试官回复（真 LLM 流式，逐 delta 推送）
-
-    普通函数：调用时同步设置 _stream_cb 并返回 _stream() async generator，
-    供 StreamingResponse 直接迭代；避免 async def 返回 coroutine 导致 500。
-    """
-    import queue as _queue
-    from ai_interviewer.agent import nodes as _nodes
-
-    q: _queue.Queue = _queue.Queue()
-    _sentinel = object()
-
-    def _cb(delta: str):
-        q.put(delta)
-
-    _nodes._stream_cb = _cb
-
-    async def _stream():
-        try:
-            def _run():
-                try:
-                    loop = asyncio.new_event_loop()
-                    result = loop.run_until_complete(agent.answer_and_ask(session_id, answer))
-                    loop.close()
-                    return result
-                except Exception as e:
-                    q.put(e)
-                    return None
-                finally:
-                    q.put(_sentinel)
-
-            import threading
-            t = threading.Thread(target=_run, daemon=True)
-            t.start()
-
-            while True:
-                item = await asyncio.to_thread(q.get)
-                if item is _sentinel:
-                    break
-                if isinstance(item, Exception):
-                    yield f"data: {json.dumps({'type': 'error', 'error': f'生成回复失败: {type(item).__name__}: {item}'}, ensure_ascii=False)}\n\n"
-                    return
-                yield f"data: {json.dumps({'type': 'answer', 'content': item}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            logger.exception("流式生成回复失败")
-            yield f"data: {json.dumps({'type': 'error', 'error': f'生成回复失败: {type(e).__name__}: {e}'}, ensure_ascii=False)}\n\n"
-            return
-        finally:
-            _nodes._stream_cb = None
-        session = agent.get_session(session_id)
-        finished = session.get("is_finished", False) if session else False
-        yield f"data: {json.dumps({'type': 'done', 'finished': finished}, ensure_ascii=False)}\n\n"
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     return _stream()
 
@@ -555,14 +409,6 @@ async def api_chat_stream(request: Request):
     )
 
 
-@app.get("/api/evaluation")
-async def api_evaluation(session_id: str = "session_1"):
-    """获取面试评估"""
-    agent = _get_agent(session_id)
-    evaluation = await agent.get_evaluation(session_id)
-    return evaluation
-
-
 # ═══════════════════════════════════════════
 #  刷题助手 API（PostgreSQL + pgvector 知识库）
 # ═══════════════════════════════════════════
@@ -579,7 +425,7 @@ def _quiz_available() -> None:
 
 
 @app.get("/api/quiz/stats")
-async def api_quiz_stats():
+def api_quiz_stats():
     """题库统计：总题数 / 大标题数 / 中标题数 / 来源页数。"""
     _quiz_available()
     try:
@@ -593,7 +439,7 @@ async def api_quiz_stats():
 
 
 @app.get("/api/quiz/topics")
-async def api_quiz_topics():
+def api_quiz_topics():
     """返回主题树：大标题 → [中标题+数量]，用于"自选主题"界面。"""
     _quiz_available()
     try:
@@ -667,7 +513,8 @@ async def api_quiz_pick(request: Request):
     try:
         from ai_interviewer.quiz import retriever
         if mode == "random":
-            items = retriever.pick_random(
+            items = await asyncio.to_thread(
+                retriever.pick_random,
                 count=(count or 1),
                 exclude_ids=data.get("exclude_ids") or None,
             )
@@ -676,7 +523,8 @@ async def api_quiz_pick(request: Request):
             if not big:
                 raise HTTPException(status_code=400, detail="by_topic 模式下 big_topic 必填")
             mid = (data.get("mid_topic") or "").strip() or None
-            items = retriever.pick_by_topic(
+            items = await asyncio.to_thread(
+                retriever.pick_by_topic,
                 big_topic=big,
                 mid_topic=mid,
                 count=count,
@@ -688,7 +536,8 @@ async def api_quiz_pick(request: Request):
                 raise HTTPException(status_code=400, detail="custom 模式下 custom_topic 必填")
             min_sim_raw = data.get("min_similarity")
             min_sim = float(min_sim_raw) if min_sim_raw is not None else None
-            items = retriever.pick_by_custom(
+            items = await asyncio.to_thread(
+                retriever.pick_by_custom,
                 custom_topic=topic,
                 count=count,
                 min_similarity=min_sim,
@@ -706,7 +555,7 @@ async def api_quiz_pick(request: Request):
 
 
 @app.get("/api/quiz/question/{question_id}/answer")
-async def api_quiz_answer(question_id: int):
+def api_quiz_answer(question_id: int):
     """点击"显示答案"：返回某题的完整答案 Markdown（含链接/图片/表格/代码）。"""
     _quiz_available()
     try:
@@ -870,13 +719,14 @@ async def api_qa_ask(request: Request):
         # 「试试」模式：跳过向量化与常规语义检索，只参考 chip 给出的那道题
         mid_topic = (try_question.get("mid_topic") or "").strip()
         q_text = (try_question.get("question") or "").strip()
-        context, refs = _build_try_qa_context(mid_topic, q_text)
+        context, refs = await asyncio.to_thread(_build_try_qa_context, mid_topic, q_text)
         llm_question = f"中标题: {mid_topic}\n问题: {q_text}" if mid_topic else q_text
     else:
         # 1) 语义检索知识库
         try:
             from ai_interviewer.quiz import retriever
-            items = retriever.search_for_qa(
+            items = await asyncio.to_thread(
+                retriever.search_for_qa,
                 query=question,
                 count=top_k,
                 min_similarity=min_sim,
@@ -924,7 +774,7 @@ async def _qa_stream(question: str, api_key: str, base_url: str, model: str, top
         q_text = (try_question.get("question") or "").strip()
         yield f"data: {json.dumps({'type': 'status', 'content': '正在检索指定题目…'}, ensure_ascii=False)}\n\n"
         await asyncio.sleep(0)
-        context, refs = _build_try_qa_context(mid_topic, q_text)
+        context, refs = await asyncio.to_thread(_build_try_qa_context, mid_topic, q_text)
         found = len(refs)
         yield f"data: {json.dumps({'type': 'status', 'content': f'已检索到 {found} 条相关内容，正在生成答案…'}, ensure_ascii=False)}\n\n"
         await asyncio.sleep(0)
@@ -940,7 +790,9 @@ async def _qa_stream(question: str, api_key: str, base_url: str, model: str, top
             yield f"data: {json.dumps({'type': 'status', 'content': '正在加载 embedding 模型（首次较慢）…'}, ensure_ascii=False)}\n\n"
         await asyncio.sleep(0)
 
-        items = retriever.search_for_qa(query=question, count=top_k, min_similarity=min_sim)
+        items = await asyncio.to_thread(
+            retriever.search_for_qa, query=question, count=top_k, min_similarity=min_sim
+        )
 
         yield f"data: {json.dumps({'type': 'status', 'content': f'已检索到 {len(items)} 条相关内容，正在生成答案…'}, ensure_ascii=False)}\n\n"
         await asyncio.sleep(0)
@@ -1016,16 +868,15 @@ async def api_health():
 
 @app.get("/api/agent-state")
 async def api_agent_state(session_id: str = "session_1"):
-    """查看 LangGraph Agent 内部状态（Planning + Memory）"""
+    """查看项目名称、固定轮次进度和面试状态。"""
     agent = _get_agent(session_id)
     state = agent.get_session(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {
-        "interview_plan": state.get("interview_plan", {}),
-        "current_topic": state.get("current_topic", ""),
+        "projects": state.get("projects", []),
+        "progress": interview_progress(state),
         "question_count": state.get("question_count", 0),
-        "max_questions": state.get("max_questions", 15),
         "is_finished": state.get("is_finished", False),
     }
 

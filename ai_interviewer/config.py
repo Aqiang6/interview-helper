@@ -48,11 +48,6 @@ class AppSettings(BaseSettings):
     # ── 加密密钥 ──
     encryption_key: str = Field(default="", description="Fernet 对称加密密钥，为空时自动生成")
 
-    # ── LangGraph Agent ──
-    agent_max_questions: int = Field(default=15, ge=3, le=50, description="单次面试最大问题数")
-    agent_recursion_limit: int = Field(default=10, ge=3, le=25, description="LangGraph 递归限制")
-    agent_enable_tools: bool = Field(default=True, description="是否启用 Tool Use")
-
     # ── OpenTelemetry ──
     otel_exporter_otlp_endpoint: str = Field(default="http://localhost:4317")
     otel_service_name: str = Field(default="ai-agent-interviewer")
