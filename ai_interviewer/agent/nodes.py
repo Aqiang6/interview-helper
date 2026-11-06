@@ -8,8 +8,8 @@ from contextvars import ContextVar
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from openai import OpenAI
 
-from ai_interviewer.agent.project_question import ProjectQuestion
-from ai_interviewer.agent.prompts import FIRST_QUESTION_OUTPUT, INTERVIEW_SYSTEM_PROMPT, QUESTION_OUTPUT
+from ai_interviewer.agent.project_question import parse_projects
+from ai_interviewer.agent.prompts import INTERVIEW_SYSTEM_PROMPT, PROJECT_EXTRACTION_PROMPT
 from ai_interviewer.agent.state import InterviewState
 
 logger = logging.getLogger(__name__)
@@ -22,70 +22,113 @@ FINISH_MESSAGE = "本次面试已完成，感谢你的回答。你可以回看�
 
 
 def interview_progress(state: InterviewState) -> dict:
-    """根据成功发出的题数计算下一题的位置，不由 LLM 决定轮数。"""
-    count = state.get("question_count", 0)
+    """返回显式游标指向的下一题位置；总题数仅用于展示。"""
     projects = state.get("projects", [])
-    project_index, project_count = divmod(count, QUESTIONS_PER_PROJECT)
-    main_index, round_index = divmod(project_count, ROUNDS_PER_QUESTION)
+    project_index = state["project_index"]
     return {
         "project_index": project_index,
         "project_name": projects[project_index] if project_index < len(projects) else "",
-        "main_question_number": main_index + 1,
-        "round_number": round_index + 1,
+        "main_question_number": state["main_question_number"],
+        "round_number": state["round_number"],
         "total_questions": len(projects) * QUESTIONS_PER_PROJECT,
     }
 
 
 def route_interview(state: InterviewState) -> str:
-    total = len(state.get("projects", [])) * QUESTIONS_PER_PROJECT
-    return "finish_interview" if total and state.get("question_count", 0) >= total else "generate_question"
+    if not state["projects"]:
+        return "identify_projects"
+    if state["project_index"] >= len(state["projects"]):
+        return "finish_interview"
+    return "ask_main_question" if state["round_number"] == 1 else "ask_follow_up"
 
 
-def generate_question(state: InterviewState) -> dict:
-    projects = state.get("projects", [])
-    count = state.get("question_count", 0)
-    progress = interview_progress(state)
-    if not projects:
-        progress_text = "首次提问：识别项目后，提出第 1 个项目的第 1 个主问题（第 1/3 轮）。"
-    else:
-        action = "提出新的主问题" if progress["round_number"] == 1 else f"进行第 {progress['round_number'] - 1}/2 次追问"
-        progress_text = (
-            f"第 {progress['project_index'] + 1}/{len(projects)} 个项目：{progress['project_name']}；"
-            f"第 {progress['main_question_number']}/3 个主问题；"
-            f"第 {progress['round_number']}/3 轮。现在应{action}。"
-        )
-    main_question = state.get("main_question", "") if progress["round_number"] > 1 else "（本轮提出新的主问题）"
+def identify_projects(state: InterviewState) -> dict:
+    """首次调用独立确定项目边界，后续节点只接收当前项目的原文。"""
+    content = _call_llm(state, [
+        {"role": "system", "content": PROJECT_EXTRACTION_PROMPT},
+        {"role": "user", "content": state["resume_projects"]},
+    ])
+    projects, details = parse_projects(content, state["resume_projects"])
+    return {"projects": projects, "project_details": details}
+
+
+def _current_project_messages(state: InterviewState) -> list:
+    records = [record for record in state["question_history"] if record["project_index"] == state["project_index"]]
+    if not records:
+        # 换项目时，刚收到的回答仍属于上个项目，不带进新项目。
+        return []
+    return state["messages"][records[0]["message_index"]:]
+
+
+def _generate_question(state: InterviewState, *, follow_up: bool) -> dict:
+    project_index = state["project_index"]
+    action = (
+        f"围绕当前主问题和上一轮回答，进行第 {state['round_number'] - 1}/2 次追问。"
+        if follow_up else "提出一个新的主问题，与本项目已有主问题采用不同的技术切入点。"
+    )
     system_content = INTERVIEW_SYSTEM_PROMPT.format(
         jd_raw_text=state.get("jd_raw_text", "") or "（未提供 JD）",
-        resume_projects=state["resume_projects"],
+        project_name=state["projects"][project_index],
+        project_details=state["project_details"][project_index],
         custom_prompt=state.get("custom_prompt", "") or "（无）",
-        progress=progress_text,
-        main_question=main_question,
-        output_format=QUESTION_OUTPUT if projects else FIRST_QUESTION_OUTPUT,
+        project_number=project_index + 1,
+        project_total=len(state["projects"]),
+        main_question_number=state["main_question_number"],
+        round_number=state["round_number"],
+        action=action,
+        main_question=state["main_question"] if follow_up else "（本轮提出新的主问题）",
     )
-    messages = [SystemMessage(content=system_content)] + [
-        message for message in state.get("messages", []) if not isinstance(message, SystemMessage)
-    ]
-    callback = question_stream_callback.get()
-    selection = ProjectQuestion(callback) if not projects else None
-    stream_callback = selection.feed if selection is not None and callback is not None else callback
+    messages = [SystemMessage(content=system_content), *_current_project_messages(state)]
     content = _call_llm(
         state, _langchain_to_openai_messages(messages),
-        temperature=0.1, max_tokens=4096, stream_callback=stream_callback,
+        temperature=0.1, max_tokens=4096, stream_callback=question_stream_callback.get(),
     )
-    if selection is not None:
-        if callback is None:
-            selection.feed(content)
-        selection.finish()
-        projects, content = selection.projects, selection.text
     if not content.strip():
         raise ValueError("模型未返回问题，请重试本题")
-    messages.append(AIMessage(content=content))
+    return {"pending_question": content}
+
+
+def ask_main_question(state: InterviewState) -> dict:
+    return _generate_question(state, follow_up=False)
+
+
+def ask_follow_up(state: InterviewState) -> dict:
+    return _generate_question(state, follow_up=True)
+
+
+def advance_progress(state: InterviewState) -> dict:
+    """出题完成后提交记录，按轮次 → 主问题 → 项目逐层推进。"""
+    question = state["pending_question"]
+    project_index = state["project_index"]
+    main_number, round_number = state["main_question_number"], state["round_number"]
+    record = {
+        "project_index": project_index,
+        "project_name": state["projects"][project_index],
+        "main_question_number": main_number,
+        "round_number": round_number,
+        "question": question,
+        "message_index": len(state["messages"]),
+    }
+    main_question = question if round_number == 1 else state["main_question"]
+    if round_number < ROUNDS_PER_QUESTION:
+        round_number += 1
+    else:
+        round_number = 1
+        main_question = ""
+        if main_number < MAIN_QUESTIONS_PER_PROJECT:
+            main_number += 1
+        else:
+            main_number = 1
+            project_index += 1
     return {
-        "messages": messages,
-        "projects": projects,
-        "question_count": count + 1,
-        "main_question": content if progress["round_number"] == 1 else state["main_question"],
+        "messages": [*state["messages"], AIMessage(content=question)],
+        "question_history": [*state["question_history"], record],
+        "question_count": state["question_count"] + 1,
+        "project_index": project_index,
+        "main_question_number": main_number,
+        "round_number": round_number,
+        "main_question": main_question,
+        "pending_question": "",
     }
 
 
