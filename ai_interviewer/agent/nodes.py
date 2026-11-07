@@ -62,13 +62,14 @@ def _current_project_messages(state: InterviewState) -> list:
 
 def _generate_question(state: InterviewState, *, follow_up: bool) -> dict:
     project_index = state["project_index"]
+    project_name = state["projects"][project_index]
     action = (
         f"围绕当前主问题和上一轮回答，进行第 {state['round_number'] - 1}/2 次追问。"
         if follow_up else "提出一个新的主问题，与本项目已有主问题采用不同的技术切入点。"
     )
     system_content = INTERVIEW_SYSTEM_PROMPT.format(
         jd_raw_text=state.get("jd_raw_text", "") or "（未提供 JD）",
-        project_name=state["projects"][project_index],
+        project_name=project_name,
         project_details=state["project_details"][project_index],
         custom_prompt=state.get("custom_prompt", "") or "（无）",
         project_number=project_index + 1,
@@ -78,14 +79,23 @@ def _generate_question(state: InterviewState, *, follow_up: bool) -> dict:
         action=action,
         main_question=state["main_question"] if follow_up else "（本轮提出新的主问题）",
     )
-    messages = [SystemMessage(content=system_content), *_current_project_messages(state)]
+    project_messages = _current_project_messages(state)
+    messages = [SystemMessage(content=system_content), *project_messages]
+    stream_callback = question_stream_callback.get()
+    intro = ""
+    if project_index > 0 and not project_messages:
+        intro = f"接下来聊聊「{project_name}」。"
+        if stream_callback is not None:
+            stream_callback(intro)
     content = _call_llm(
         state, _langchain_to_openai_messages(messages),
-        temperature=0.1, max_tokens=4096, stream_callback=question_stream_callback.get(),
+        temperature=0.7,
+        max_tokens=4096,
+        stream_callback=stream_callback,
     )
     if not content.strip():
         raise ValueError("模型未返回问题，请重试本题")
-    return {"pending_question": content}
+    return {"pending_question": intro + content}
 
 
 def ask_main_question(state: InterviewState) -> dict:
