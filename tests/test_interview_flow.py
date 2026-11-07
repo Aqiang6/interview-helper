@@ -70,12 +70,17 @@ class InterviewFlowTests(unittest.IsolatedAsyncioTestCase):
             for project in NAMES for main in (1, 2, 3) for turn in (1, 2, 3)
         ]
         with patch.object(nodes, "_call_llm", side_effect=fake_llm) as llm:
+            main_question = ""
             for index, (project, main, turn) in enumerate(expected):
                 if index == 0:
                     answer = await agent.get_first_question("test")
                 else:
                     answer = await agent.answer_and_ask("test", f"回答{index}")
-                self.assertEqual(answer, f"问题{index + 1}？")
+                expected_question = f"问题{index + 1}？"
+                if index == 9:
+                    expected_question = f"接下来聊聊「{project}」。{expected_question}"
+                self.assertEqual(answer, expected_question)
+                self.assertEqual(llm.call_args.kwargs["temperature"], 0.7)
                 state = agent.get_session("test")
                 self.assertEqual(state["question_count"], index + 1)
                 self.assertFalse(state["is_finished"])
@@ -88,10 +93,12 @@ class InterviewFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(f"第 {turn}/3 轮", prompt)
                 record = state["question_history"][-1]
                 self.assertEqual((record["project_name"], record["main_question_number"], record["round_number"]), (project, main, turn))
-                root_number = index - (turn - 1) + 1
-                self.assertEqual(state["main_question"], f"问题{root_number}？" if turn < 3 else "")
+                self.assertEqual(record["question"], expected_question)
+                if turn == 1:
+                    main_question = expected_question
+                self.assertEqual(state["main_question"], main_question if turn < 3 else "")
                 if turn > 1:
-                    self.assertIn(f"问题{root_number}？", prompt)
+                    self.assertIn(main_question, prompt)
                 if index == 9:
                     self.assertEqual(len(llm.call_args.args[1]), 1)
             finished = []
@@ -150,6 +157,8 @@ class InterviewFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(names[index // 9], question)
                 if index % 9 == 0:
                     self.assertEqual(len(question_prompts[-1]), 1)
+                if index in (9, 18):
+                    self.assertEqual(chunks[0], f"接下来聊聊「{names[index // 9]}」。")
             self.assertFalse(agent.get_session("three")["is_finished"])
             await agent.answer_and_ask("three", "订单服务的最后回答")
             self.assertEqual(llm.call_count, 28)
