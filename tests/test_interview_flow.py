@@ -19,6 +19,8 @@ PROJECTS = "项目经历\n知识库系统：实现文档检索。\n订单服务�
 NAMES = ["知识库系统", "订单服务"]
 DETAILS = ["知识库系统：实现文档检索。", "订单服务：实现订单处理。"]
 JD = "  岗位要求\n熟悉检索系统。\n\n职责：负责订单服务。  \n"
+MAAS_BASE_URL = "https://api.modelarts-maas.com/openai/v1"
+MAAS_MODEL = "deepseek-v4.1-flash-1017"
 
 
 def fake_llm(state, messages, *, stream_callback=None, **kwargs):
@@ -71,36 +73,53 @@ class InterviewFlowTests(unittest.IsolatedAsyncioTestCase):
         ]
         with patch.object(nodes, "_call_llm", side_effect=fake_llm) as llm:
             main_question = ""
+            previous_main_questions = []
             for index, (project, main, turn) in enumerate(expected):
                 if index == 0:
                     answer = await agent.get_first_question("test")
                 else:
                     answer = await agent.answer_and_ask("test", f"回答{index}")
                 expected_question = f"问题{index + 1}？"
-                if index == 9:
+                if index == 0:
+                    expected_question = f"先聊聊「{project}」。{expected_question}"
+                elif index == 9:
                     expected_question = f"接下来聊聊「{project}」。{expected_question}"
                 self.assertEqual(answer, expected_question)
-                self.assertEqual(llm.call_args.kwargs["temperature"], 0.7)
+                self.assertEqual(llm.call_args.kwargs["temperature"], 0.4)
+                self.assertIsNone(llm.call_args.kwargs["extra_body"])
                 state = agent.get_session("test")
                 self.assertEqual(state["question_count"], index + 1)
                 self.assertFalse(state["is_finished"])
-                prompt = llm.call_args.args[1][0]["content"]
-                self.assertIn(JD, prompt)
-                self.assertIn(project, prompt)
-                self.assertIn(DETAILS[index // 9], prompt)
-                self.assertNotIn(DETAILS[1 - index // 9], prompt)
-                self.assertIn(f"第 {main}/3 个主问题", prompt)
-                self.assertIn(f"第 {turn}/3 轮", prompt)
+                messages = llm.call_args.args[1]
+                prompt, context = messages[0]["content"], messages[1]["content"]
+                self.assertIn(JD, context)
+                self.assertIn(project, context)
+                self.assertIn(DETAILS[index // 9], context)
+                self.assertNotIn(DETAILS[index // 9], prompt)
+                self.assertNotIn(DETAILS[1 - index // 9], context)
                 record = state["question_history"][-1]
                 self.assertEqual((record["project_name"], record["main_question_number"], record["round_number"]), (project, main, turn))
                 self.assertEqual(record["question"], expected_question)
+                roles = [message["role"] for message in messages]
+                self.assertEqual(roles, ["system", "user"] + ["assistant", "user"] * (turn - 1))
                 if turn == 1:
+                    if main == 1:
+                        previous_main_questions.clear()
+                        self.assertIn("第一个主问题", context)
+                        self.assertNotIn("<previous_main_questions>", context)
+                    else:
+                        self.assertIn("新的主问题", context)
+                        self.assertIn("同一技术的另一个角度", context)
+                        self.assertIn("\n".join(f"- {question}" for question in previous_main_questions), context)
+                        self.assertNotIn(f"问题{index}？", context)
+                        self.assertNotIn(f"回答{index}", context)
+                    previous_main_questions.append(expected_question)
                     main_question = expected_question
+                else:
+                    self.assertIn("上一条回答", prompt)
+                    self.assertEqual(messages[2]["content"], main_question)
+                    self.assertEqual(messages[-1]["content"], f"回答{index}")
                 self.assertEqual(state["main_question"], main_question if turn < 3 else "")
-                if turn > 1:
-                    self.assertIn(main_question, prompt)
-                if index == 9:
-                    self.assertEqual(len(llm.call_args.args[1]), 1)
             finished = []
             await agent.answer_and_ask("test", "最后一题的回答", finished.append)
             self.assertEqual(finished, [nodes.FINISH_MESSAGE])
@@ -113,7 +132,7 @@ class InterviewFlowTests(unittest.IsolatedAsyncioTestCase):
         names = ["12306", "知识库系统", "订单服务"]
         details = ["12306：实现余票查询。", *DETAILS]
         projects = "项目经历\n" + "\n".join(details)
-        agent = InterviewGraphAgent(api_key="test")
+        agent = InterviewGraphAgent(api_key="test", base_url=MAAS_BASE_URL, model=MAAS_MODEL)
         agent.create_session("three", projects, resume_projects=projects)
         question_prompts = []
         visited = []
@@ -131,11 +150,11 @@ class InterviewFlowTests(unittest.IsolatedAsyncioTestCase):
                 ]}, ensure_ascii=False)
             question_prompts.append(messages)
             project_index = state["project_index"]
-            prompt = messages[0]["content"]
-            self.assertIn(details[project_index], prompt)
+            context = messages[1]["content"]
+            self.assertIn(details[project_index], context)
             for index, detail in enumerate(details):
                 if index != project_index:
-                    self.assertNotIn(detail, prompt)
+                    self.assertNotIn(detail, context)
             for message in messages[1:]:
                 for index, name in enumerate(names):
                     if index != project_index:
@@ -156,9 +175,14 @@ class InterviewFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("".join(chunks), question)
                 self.assertIn(names[index // 9], question)
                 if index % 9 == 0:
-                    self.assertEqual(len(question_prompts[-1]), 1)
-                if index in (9, 18):
-                    self.assertEqual(chunks[0], f"接下来聊聊「{names[index // 9]}」。")
+                    self.assertEqual([message["role"] for message in question_prompts[-1]], ["system", "user"])
+                    self.assertIn("第一个主问题", question_prompts[-1][1]["content"])
+                    opening = "先聊聊" if index == 0 else "接下来聊聊"
+                    self.assertEqual(chunks[0], f"{opening}「{names[index // 9]}」。")
+                if index % 3 == 0:
+                    self.assertEqual(llm.call_args.kwargs["extra_body"], {"chat_template_kwargs": {"thinking": False}})
+                else:
+                    self.assertIsNone(llm.call_args.kwargs["extra_body"])
             self.assertFalse(agent.get_session("three")["is_finished"])
             await agent.answer_and_ask("three", "订单服务的最后回答")
             self.assertEqual(llm.call_count, 28)
@@ -175,7 +199,7 @@ class InterviewFlowTests(unittest.IsolatedAsyncioTestCase):
         agent.create_session("concurrent", PROJECTS, resume_projects=PROJECTS)
         with patch.object(nodes, "_call_llm", side_effect=fake_llm) as llm:
             firsts = await asyncio.gather(*[agent.get_first_question("concurrent") for _ in range(2)])
-            self.assertEqual(firsts, ["问题1？", "问题1？"])
+            self.assertEqual(firsts, ["先聊聊「知识库系统」。问题1？"] * 2)
             self.assertEqual(llm.call_count, 2)
             questions = await asyncio.gather(*[agent.answer_and_ask("concurrent", f"回答{i}") for i in range(2)])
         self.assertEqual(questions, ["问题2？", "问题3？"])
@@ -233,21 +257,85 @@ class InterviewApiTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post("/api/first-question-stream", json={"session_id": sid})
             self.assertEqual(response.status_code, 200)
             events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
-            self.assertEqual("".join(e["content"] for e in events if e["type"] == "answer"), "问题1？")
+            self.assertEqual("".join(e["content"] for e in events if e["type"] == "answer"), "先聊聊「知识库系统」。问题1？")
             self.assertEqual(events[-1], {"type": "done", "finished": False})
             self.assertNotIn('"start"', response.text)
-            prompt = llm.call_args.args[1][0]["content"]
-            self.assertIn(JD, prompt)
-            self.assertIn(DETAILS[0], prompt)
-            self.assertNotIn(DETAILS[1], prompt)
+            context = llm.call_args.args[1][1]["content"]
+            self.assertIn(JD, context)
+            self.assertIn(DETAILS[0], context)
+            self.assertNotIn(DETAILS[1], context)
             self.assertEqual(llm.call_count, 2)
             response = await self.client.post("/api/chat-stream", json={"session_id": sid, "answer": "用了混合检索"})
             self.assertEqual(response.status_code, 200)
-            self.assertIn("第 2/3 轮", llm.call_args.args[1][0]["content"])
+            messages = llm.call_args.args[1]
+            self.assertEqual([message["role"] for message in messages], ["system", "user", "assistant", "user"])
+            self.assertEqual(messages[-1]["content"], "用了混合检索")
             snapshot = (await self.client.get(f"/api/agent-state?session_id={sid}")).json()
             self.assertEqual(snapshot["question_count"], 2)
             self.assertEqual(snapshot["progress"]["round_number"], 3)
             self.assertEqual([q["round_number"] for q in snapshot["question_history"]], [1, 2])
+
+    async def test_new_main_questions_use_direct_maas_requests(self):
+        third_project = "面试助手"
+        third_details = f"{third_project}：用 LangGraph 控制面试流程。"
+
+        def known_projects_llm(state, messages, **kwargs):
+            if not state["projects"]:
+                return json.dumps({"projects": [
+                    {"name": name, "start": name} for name in [*NAMES, third_project]
+                ]}, ensure_ascii=False)
+            return fake_llm(state, messages, **kwargs)
+
+        cases = [
+            (4, DETAILS[0], "新的主问题", "", "你如何验证文档检索的效果？"),
+            (19, third_details, "第一个主问题", f"接下来聊聊「{third_project}」。", "你如何用 LangGraph 管理面试进度？"),
+        ]
+        for number, details, task, intro, question in cases:
+            with self.subTest(question_number=number):
+                sid, _ = await self.start(
+                    resume_projects=f"{PROJECTS}\n{third_details}", base_url=MAAS_BASE_URL, model=MAAS_MODEL,
+                )
+                agent = web._sessions[sid]
+                with patch.object(nodes, "_call_llm", side_effect=known_projects_llm):
+                    await agent.get_first_question(sid)
+                    for index in range(1, number - 1):
+                        await agent.answer_and_ask(sid, f"回答{index}")
+
+                requests = []
+
+                def model_response(request):
+                    body = json.loads(request.content)
+                    requests.append(body)
+                    # 用只返回推理字段的模拟响应检查主问题请求是否显式启用了直接出题。
+                    direct = body.get("chat_template_kwargs") == {"thinking": False}
+                    delta = {"content": question} if direct else {"reasoning_content": "模型思考内容"}
+                    chunk = {
+                        "id": "test", "object": "chat.completion.chunk", "created": 0, "model": MAAS_MODEL,
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": "stop"}],
+                    }
+                    return httpx.Response(200, text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n")
+
+                last_answer = "已结束话题的最后回答"
+                transport = httpx.MockTransport(model_response)
+                with nodes.OpenAI(api_key="test", base_url=MAAS_BASE_URL, http_client=httpx.Client(transport=transport)) as client:
+                    with patch.object(nodes, "OpenAI", return_value=client):
+                        response = await self.client.post("/api/chat-stream", json={"session_id": sid, "answer": last_answer})
+
+                self.assertEqual(len(requests), 1)
+                messages = requests[0]["messages"]
+                self.assertEqual([message["role"] for message in messages], ["system", "user"])
+                self.assertIn(details, messages[1]["content"])
+                self.assertIn(task, messages[1]["content"])
+                self.assertNotIn(details, messages[0]["content"])
+                self.assertNotIn(last_answer, messages[1]["content"])
+                events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+                expected_question = intro + question
+                self.assertEqual("".join(e["content"] for e in events if e["type"] == "answer"), expected_question)
+                self.assertEqual(events[-1], {"type": "done", "finished": False})
+                session = agent.get_session(sid)
+                self.assertEqual(session["question_count"], number)
+                self.assertEqual(session["question_history"][-1]["question"], expected_question)
+                self.assertEqual(agent.get_messages(sid)[-2].content, last_answer)
 
     async def test_blocked_quiz_query_does_not_block_health_or_start(self):
         entered, release = threading.Event(), threading.Event()

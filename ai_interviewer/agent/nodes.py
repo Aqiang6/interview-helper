@@ -9,7 +9,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from openai import OpenAI
 
 from ai_interviewer.agent.project_question import parse_projects
-from ai_interviewer.agent.prompts import INTERVIEW_SYSTEM_PROMPT, PROJECT_EXTRACTION_PROMPT
+from ai_interviewer.agent.prompts import (
+    INTERVIEW_PROJECT_CONTEXT, INTERVIEW_SYSTEM_PROMPT, PROJECT_EXTRACTION_PROMPT,
+)
 from ai_interviewer.agent.state import InterviewState
 
 logger = logging.getLogger(__name__)
@@ -52,50 +54,77 @@ def identify_projects(state: InterviewState) -> dict:
     return {"projects": projects, "project_details": details}
 
 
-def _current_project_messages(state: InterviewState) -> list:
-    records = [record for record in state["question_history"] if record["project_index"] == state["project_index"]]
-    if not records:
-        # 换项目时，刚收到的回答仍属于上个项目，不带进新项目。
-        return []
-    return state["messages"][records[0]["message_index"]:]
-
-
 def _generate_question(state: InterviewState, *, follow_up: bool) -> dict:
     project_index = state["project_index"]
     project_name = state["projects"][project_index]
-    action = (
-        f"围绕当前主问题和上一轮回答，进行第 {state['round_number'] - 1}/2 次追问。"
-        if follow_up else "提出一个新的主问题，与本项目已有主问题采用不同的技术切入点。"
-    )
-    system_content = INTERVIEW_SYSTEM_PROMPT.format(
-        jd_raw_text=state.get("jd_raw_text", "") or "（未提供 JD）",
+    is_project_opening = state["main_question_number"] == 1 and state["round_number"] == 1
+    intro = ""
+    if is_project_opening:
+        action = "根据当前项目经历，提出该项目的第一个主问题。"
+        opening = "先聊聊" if project_index == 0 else "接下来聊聊"
+        intro = f"{opening}「{project_name}」。"
+    elif follow_up:
+        action = "围绕这组对话的主问题和候选人的上一条回答，追问一个还没展开的细节。"
+    else:
+        action = (
+            "根据项目经历提出一个新的主问题，优先选还没作为主问题的技术点。"
+            "项目资料较少时，可以从同一技术的另一个角度切入，比如设计取舍或验证方法。"
+        )
+    project_context = INTERVIEW_PROJECT_CONTEXT.format(
         project_name=project_name,
         project_details=state["project_details"][project_index],
+        jd_raw_text=state.get("jd_raw_text", "") or "（未提供 JD）",
         custom_prompt=state.get("custom_prompt", "") or "（无）",
-        project_number=project_index + 1,
-        project_total=len(state["projects"]),
-        main_question_number=state["main_question_number"],
-        round_number=state["round_number"],
-        action=action,
-        main_question=state["main_question"] if follow_up else "（本轮提出新的主问题）",
     )
-    project_messages = _current_project_messages(state)
-    messages = [SystemMessage(content=system_content), *project_messages]
+    main_records = [
+        record for record in state["question_history"]
+        if record["project_index"] == project_index and record["round_number"] == 1
+    ]
+    topic_messages = []
+    if follow_up:
+        # 追问所需的对话从当前主问题开始。
+        topic_messages = state["messages"][main_records[-1]["message_index"]:]
+    else:
+        if main_records:
+            previous_questions = "\n".join(f"- {record['question']}" for record in main_records)
+            project_context += f"\n\n<previous_main_questions>\n{previous_questions}\n</previous_main_questions>"
+        project_context += f"\n\n{action}"
+    messages = [
+        SystemMessage(content=INTERVIEW_SYSTEM_PROMPT.format(action=action)),
+        HumanMessage(content=project_context),
+        *topic_messages,
+    ]
+
     stream_callback = question_stream_callback.get()
-    intro = ""
-    if project_index > 0 and not project_messages:
-        intro = f"接下来聊聊「{project_name}」。"
-        if stream_callback is not None:
-            stream_callback(intro)
+    pending_intro = intro
+
+    def stream_question(delta: str) -> None:
+        nonlocal pending_intro
+        if pending_intro:
+            delta = delta.lstrip()
+            if not delta:
+                return
+            stream_callback(pending_intro)
+            pending_intro = ""
+        stream_callback(delta)
+
+    extra_body = None
+    if (
+        not follow_up
+        and state["model"].casefold() == "deepseek-v4.1-flash-1017"
+        and state["base_url"] == "https://api.modelarts-maas.com/openai/v1"
+    ):
+        # 华为云该模型默认深度思考，主问题使用直接出题模式。
+        extra_body = {"chat_template_kwargs": {"thinking": False}}
     content = _call_llm(
         state, _langchain_to_openai_messages(messages),
-        temperature=0.7,
-        max_tokens=4096,
-        stream_callback=stream_callback,
+        temperature=0.4,
+        stream_callback=stream_question if stream_callback is not None else None,
+        extra_body=extra_body,
     )
     if not content.strip():
-        raise ValueError("模型未返回问题，请重试本题")
-    return {"pending_question": intro + content}
+        raise ValueError(f"模型未返回问题（项目「{project_name}」）")
+    return {"pending_question": intro + content.lstrip() if intro else content}
 
 
 def ask_main_question(state: InterviewState) -> dict:
@@ -172,17 +201,14 @@ def _call_llm(
     max_tokens: int = 4096,
     timeout: int = 60,
     stream_callback=None,
+    extra_body: dict | None = None,
 ) -> str:
     """用原生 openai 库调 LLM，返回响应文本（失败直接抛异常）
 
     当 stream_callback 不为 None 时，使用 stream=True 逐 delta 调用回调函数，
     实现真流式输出。回调签名：stream_callback(delta: str) -> None。
-    max_tokens=4096 兼容思考模型（如 glm-5.3-flash）：思考过程+输出内容共需较大空间
     """
     import time as _time
-    # bigmodel 要求至少一条 user 消息，只有 system 时补一条
-    if not any(m.get("role") == "user" for m in messages):
-        messages = messages + [{"role": "user", "content": "请开始提问。"}]
     client = OpenAI(
         api_key=state.get("api_key", ""),
         base_url=state.get("base_url", "https://api.openai.com/v1"),
@@ -190,36 +216,39 @@ def _call_llm(
         max_retries=0,
     )
     t0 = _time.time()
-
-    if stream_callback is not None:
-        # 流式模式：逐 delta 推送给回调，同时拼接完整文本
-        stream = client.chat.completions.create(
-            model=state.get("model", "gpt-4o"),
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-        )
-        content = ""
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content or ""
-            if delta:
-                content += delta
-                stream_callback(delta)
-        elapsed = _time.time() - t0
-        logger.info("LLM 流式调用完成: model=%s 耗时=%.1fs 输出=%d字符", state.get("model", ""), elapsed, len(content))
-        return content
-
-    # 非流式模式（原有逻辑不变）
-    resp = client.chat.completions.create(
-        model=state.get("model", "gpt-4o"),
+    model = state.get("model", "gpt-4o")
+    response = client.chat.completions.create(
+        model=model,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
+        stream=stream_callback is not None,
+        extra_body=extra_body,
     )
-    elapsed = _time.time() - t0
-    content = resp.choices[0].message.content or ""
-    logger.info("LLM 调用完成: model=%s 耗时=%.1fs 输出=%d字符", state.get("model", ""), elapsed, len(content))
+    finish_reason = None
+    has_reasoning = False
+    content = ""
+    if stream_callback is not None:
+        for chunk in response:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            finish_reason = choice.finish_reason or finish_reason
+            has_reasoning = has_reasoning or bool(getattr(choice.delta, "reasoning_content", None))
+            delta = getattr(choice.delta, "content", None)
+            if delta:
+                content += delta
+                stream_callback(delta)
+    elif response.choices:
+        choice = response.choices[0]
+        finish_reason = choice.finish_reason
+        has_reasoning = bool(getattr(choice.message, "reasoning_content", None))
+        content = choice.message.content or ""
+    log = logger.info if content.strip() else logger.warning
+    log(
+        "LLM 调用完成 model=%s project=%d main=%d round=%d stream=%s "
+        "正文=%d字符 finish_reason=%s has_reasoning=%s 耗时=%.1fs",
+        model, state["project_index"] + 1, state["main_question_number"], state["round_number"],
+        stream_callback is not None, len(content), finish_reason, has_reasoning, _time.time() - t0,
+    )
     return content
