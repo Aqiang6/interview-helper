@@ -26,6 +26,9 @@ tesseract-installer.exe
 # Resume cache
 ai_interviewer/.resume_cache/
 
+# Interview feedback
+ai_interviewer/.interview_feedback/
+
 # Tika runtime JAR and checksum cache
 .tika_cache/
 

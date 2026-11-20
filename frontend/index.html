@@ -797,27 +797,34 @@
                     </div>
                 </div>
 
-                <!-- 步骤 4: 面试结束（只保留再来一次，不渲染综合评价） -->
+                <!-- 步骤 4: 面试结束与反馈 -->
                 <div class="card interview-step interview-step--done" v-if="interviewStep === 4">
                     <div class="interview-done__hero">
                         <div class="interview-done__icon">🎉</div>
                         <div class="interview-done__title">本轮面试已结束</div>
-                        <div class="interview-done__sub">想再练一轮？直接「再来一次」，可选填定向提示词，让下一轮聚焦你想深挖的方向。</div>
+                        <div v-if="finished && feedbackRoundId" class="interview-done__sub">已保存的反馈会用于后续面试出题。</div>
                     </div>
 
                     <div class="interview-done__box">
-                        <label class="field-label">定向调整（可选）</label>
-                        <textarea
-                            v-model="retryPrompt"
-                            class="qa-textarea"
-                            rows="5"
-                            placeholder="例如：多问 Redis 底层原理和源码实现；项目部分重点追问技术选型的理由；降低八股比例，多问实际线上问题排查；针对我简历里的 RAG 项目深挖向量检索细节"></textarea>
+                        <template v-if="finished && feedbackRoundId">
+                            <label for="interview-feedback" class="field-label">面试反馈（可选）</label>
+                            <textarea
+                                id="interview-feedback"
+                                v-model="interviewFeedback"
+                                class="qa-textarea"
+                                rows="5"
+                                maxlength="1000"
+                                :disabled="loading || savingFeedback"
+                                placeholder="可以写希望多问的技术点、想调整的难度，或希望怎样追问。"></textarea>
+                        </template>
                         <div class="interview-done__actions">
-                            <button type="button" class="btn btn--primary" @click="restartInterview" :disabled="loading || !resumeParsed">
+                            <button type="button" class="btn btn--primary" @click="startInterview" :disabled="loading || savingFeedback || !resumeParsed">
                                 <span v-if="loading">加载中…</span>
                                 <span v-else>再来一次</span>
                             </button>
-                            <button type="button" class="btn" @click="gotoResumeUpload">回到投递简历</button>
+                            <button v-if="finished && feedbackRoundId" type="button" class="btn" @click="saveInterviewFeedback"
+                                :disabled="loading || savingFeedback || !interviewFeedback.trim()">保存反馈</button>
+                            <button type="button" class="btn" @click="gotoResumeUpload" :disabled="loading || savingFeedback">回到投递简历</button>
                         </div>
                     </div>
                 </div>
@@ -1239,6 +1246,7 @@ function main() {
         setup() {
             /* ---------- shared / shell ---------- */
             const currentApp = ref('interview');  // 'interview' | 'quiz' | 'qa'
+            const interviewSessionId = crypto.getRandomValues(new Uint32Array(4)).join('-');
 
             const serviceStatus = computed(() => {
                 if (!state._healthChecked) return { color: 'warn', text: '检测后端…' };
@@ -1256,7 +1264,7 @@ function main() {
                     { id: 1, label: '模型设置', hint: '填入你自己的 API Key 和 Base URL。' },
                     { id: 2, label: '上传简历', hint: 'PDF / 文本 / 或从已缓存简历中挑选，再选岗位。' },
                     { id: 3, label: '模拟面试', hint: '面试官根据你的简历和 JD 真实追问。' },
-                    { id: 4, label: '结束 / 再来一次', hint: '本轮结束，一键重新开始。' },
+                    { id: 4, label: '结束 / 反馈', hint: '保存反馈或再练一轮。' },
                 ],
                 loading: false,
                 positionsLoading: false,
@@ -1266,7 +1274,9 @@ function main() {
                 jdMode: 'preset',
                 customJdName: '',
                 customJdText: '',
-                retryPrompt: '',
+                feedbackRoundId: '',
+                interviewFeedback: '',
+                savingFeedback: false,
                 resumeProjects: '',
                 loadingStatus: '',
                 resumeTab: 'pdf',
@@ -1508,7 +1518,12 @@ function main() {
                 } finally { state.loading = false; }
             }
             async function startInterview() {
-                saveConfig();
+                if (state.loading || state.savingFeedback) return;
+                if (!state.resume.raw_text && !state.resumeText) {
+                    ElMessage.warning('请先上传简历');
+                    await gotoResumeUpload();
+                    return;
+                }
                 if (state.jdMode === 'preset' && state.positions.length && !state.targetPosition) {
                     ElMessage.warning('请先选择应聘岗位'); return;
                 }
@@ -1518,6 +1533,8 @@ function main() {
                 state.loading = true;
                 state.loadingStatus = '正在准备面试...';
                 try {
+                    saveConfig();
+                    if (!await saveInterviewFeedback()) return;
                     const reqBody = {
                         api_key: state.form.apiKey,
                         base_url: state.form.baseUrl,
@@ -1525,7 +1542,7 @@ function main() {
                         resume_text: state.resume.raw_text || state.resumeText,
                         resume_projects: state.resumeProjects || undefined,
                         candidate_name: state.resume.name,
-                        session_id: 'session_1',
+                        session_id: interviewSessionId,
                     };
                     if (state.jdMode === 'custom') {
                         reqBody.custom_jd_name = state.customJdName;
@@ -1539,21 +1556,18 @@ function main() {
                         body: JSON.stringify(reqBody),
                     });
                     const data = await res.json();
-                    if (data.status === 'ready') {
-                        state.interviewStep = 3;
-                        state.chatMessages = [];
-                        state.userAnswer = '';
-                        state.finished = false;
-                        state.loadingStatus = '正在生成面试问题...';
-                        state.interviewerStatus = 'typing';
-                        await getFirstQuestion();
-                    } else if (!res.ok) {
-                        ElMessage.error(data.detail || '开始面试失败');
-                        state.interviewStep = 2;
-                        state.interviewerStatus = 'idle';
-                    } else {
-                        ElMessage.error(data.detail || '开始面试失败');
+                    if (!res.ok || data.status !== 'ready') {
+                        throw new Error(data.detail || '会话创建失败');
                     }
+                    state.feedbackRoundId = data.feedback_round_id;
+                    state.interviewFeedback = '';
+                    state.interviewStep = 3;
+                    state.chatMessages = [];
+                    state.userAnswer = '';
+                    state.finished = false;
+                    state.loadingStatus = '正在生成面试问题...';
+                    state.interviewerStatus = 'typing';
+                    await getFirstQuestion();
                 } catch (e) {
                     ElMessage.error('开始面试失败：' + e.message);
                     state.interviewerStatus = 'idle';
@@ -1563,6 +1577,7 @@ function main() {
                 }
             }
             async function getFirstQuestion() {
+                const roundId = state.feedbackRoundId;
                 state.streaming = true;
                 state.interviewerStatus = 'typing';
                 const aiMsg = reactive({ role: 'interviewer', content: '', streaming: true, _time: _nowClock() });
@@ -1572,7 +1587,7 @@ function main() {
                     const res = await fetch('/api/first-question-stream', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ session_id: 'session_1' }),
+                        body: JSON.stringify({ session_id: interviewSessionId }),
                     });
                     if (!res.ok) {
                         const err = await res.json().catch(() => ({}));
@@ -1601,10 +1616,7 @@ function main() {
                                 aiMsg.streaming = false;
                             } else if (payload.type === 'done') {
                                 aiMsg.streaming = false;
-                                if (payload.finished) {
-                                    state.finished = true;
-                                    nextTick(() => { finishInterview(); });
-                                }
+                                if (payload.finished && state.feedbackRoundId === roundId) finishInterview();
                             }
                         }
                     }
@@ -1614,9 +1626,11 @@ function main() {
                     ElMessage.error('获取问题失败：' + e.message);
                 } finally {
                     aiMsg.streaming = false;
-                    state.streaming = false;
-                    state.interviewerStatus = 'idle';
-                    nextTick(scrollToBottom);
+                    if (state.feedbackRoundId === roundId) {
+                        state.streaming = false;
+                        state.interviewerStatus = 'idle';
+                        nextTick(scrollToBottom);
+                    }
                 }
             }
             function _nowClock() {
@@ -1628,7 +1642,8 @@ function main() {
                 } catch (_) { return ''; }
             }
             async function sendAnswer() {
-                if (!state.userAnswer.trim()) return;
+                const roundId = state.feedbackRoundId;
+                if (!roundId || !state.userAnswer.trim()) return;
                 state.chatMessages.push({ role: 'candidate', content: state.userAnswer, _time: _nowClock() });
                 const answer = state.userAnswer;
                 state.userAnswer = '';
@@ -1642,7 +1657,7 @@ function main() {
                     const res = await fetch('/api/chat-stream', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ session_id: 'session_1', answer: answer }),
+                        body: JSON.stringify({ session_id: interviewSessionId, answer: answer }),
                     });
                     if (!res.ok) {
                         const err = await res.json().catch(() => ({}));
@@ -1671,10 +1686,7 @@ function main() {
                                 aiMsg.streaming = false;
                             } else if (payload.type === 'done') {
                                 aiMsg.streaming = false;
-                                if (payload.finished) {
-                                    state.finished = true;
-                                    nextTick(() => { finishInterview(); });
-                                }
+                                if (payload.finished && state.feedbackRoundId === roundId) finishInterview();
                             }
                         }
                     }
@@ -1684,9 +1696,11 @@ function main() {
                     ElMessage.error('发送失败：' + e.message);
                 } finally {
                     aiMsg.streaming = false;
-                    state.streaming = false;
-                    state.interviewerStatus = 'idle';
-                    nextTick(scrollToBottom);
+                    if (state.feedbackRoundId === roundId) {
+                        state.streaming = false;
+                        state.interviewerStatus = 'idle';
+                        nextTick(scrollToBottom);
+                    }
                 }
             }
             const chatContainer = ref(null);
@@ -1700,59 +1714,34 @@ function main() {
                 state.interviewerStatus = 'idle';
                 state.interviewStep = 4;
             }
-            async function restartInterview() {
-                saveConfig();
-                if (!state.resume.raw_text && !state.resumeText) {
-                    ElMessage.warning('简历数据已丢失，请重新上传');
-                    resetInterviewFlow();
-                    return;
-                }
-                state.loading = true;
-                state.loadingStatus = '正在准备面试...';
+            async function saveInterviewFeedback() {
+                if (state.savingFeedback) return false;
+                const feedback = state.interviewFeedback.trim();
+                if (!state.finished || !state.feedbackRoundId || !feedback) return true;
+                state.savingFeedback = true;
                 try {
-                    const reqBody = {
-                        api_key: state.form.apiKey,
-                        base_url: state.form.baseUrl,
-                        model: state.form.model,
-                        resume_text: state.resume.raw_text || state.resumeText,
-                        resume_projects: state.resumeProjects || undefined,
-                        candidate_name: state.resume.name,
-                        session_id: 'session_1',
-                        custom_prompt: state.retryPrompt || undefined,
-                    };
-                    if (state.jdMode === 'custom' && state.customJdName && state.customJdText) {
-                        reqBody.custom_jd_name = state.customJdName;
-                        reqBody.custom_jd_text = state.customJdText;
-                    } else if (state.targetPosition) {
-                        reqBody.target_position = state.targetPosition;
-                    }
-                    const res = await fetch('/api/start-interview', {
+                    const res = await fetch('/api/interview-feedback', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(reqBody),
+                        body: JSON.stringify({ round_id: state.feedbackRoundId, feedback }),
                     });
-                    const data = await res.json();
-                    if (data.status === 'ready') {
-                        state.interviewStep = 3;
-                        state.chatMessages = [];
-                        state.userAnswer = '';
-                        state.finished = false;
-                        state.loadingStatus = '正在生成面试问题...';
-                        state.interviewerStatus = 'typing';
-                        await getFirstQuestion();
-                    } else if (!res.ok) {
-                        ElMessage.error(data.detail || '再来一次失败');
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(typeof err.detail === 'string' ? err.detail : '请重试');
                     }
+                    ElMessage.success('面试反馈已保存');
+                    return true;
                 } catch (e) {
-                    ElMessage.error('再来一次失败：' + e.message);
-                    state.interviewerStatus = 'idle';
+                    ElMessage.error('保存面试反馈失败：' + e.message);
+                    return false;
                 } finally {
-                    state.loading = false;
-                    state.loadingStatus = '';
+                    state.savingFeedback = false;
                 }
             }
             function resetInterviewFlow() {
                 state.interviewStep = 1;
+                state.feedbackRoundId = '';
+                state.interviewFeedback = '';
                 state.resumeText = '';
                 state.pdfData = '';
                 state.resumeParsed = false;
@@ -1764,18 +1753,10 @@ function main() {
                 state.interviewerStatus = 'idle';
             }
 
-            /* Step 4「回到投递简历」：保留 API 配置，直接跳 Step 2 上传简历，不再走填 API 的 Step 1 */
-            function gotoResumeUpload() {
+            async function gotoResumeUpload() {
+                if (state.loading || state.savingFeedback || !await saveInterviewFeedback()) return;
+                resetInterviewFlow();
                 state.interviewStep = 2;
-                state.resumeText = '';
-                state.pdfData = '';
-                state.resumeParsed = false;
-                state.resume = {};
-                state.chatMessages = [];
-                state.userAnswer = '';
-                state.finished = false;
-                state.streaming = false;
-                state.interviewerStatus = 'idle';
             }
 
             /* ---------- quiz helpers ---------- */
@@ -2428,7 +2409,7 @@ function main() {
                 currentPositionName, currentPositionMeta,
                 loadSavedResumes, selectSavedResume, deleteSavedResume, handlePdfUpload, parseResume,
                 startInterview, getFirstQuestion, sendAnswer, finishInterview,
-                restartInterview, resetInterviewFlow, gotoResumeUpload, chatContainer, scrollToBottom,
+                saveInterviewFeedback, resetInterviewFlow, gotoResumeUpload, chatContainer, scrollToBottom,
 
                 // quiz
                 loadQuizStats, loadTopics, filteredTopics, currentBigMidList, quickMidTopics,

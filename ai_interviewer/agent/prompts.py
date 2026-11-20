@@ -15,6 +15,13 @@ INTERVIEW_SYSTEM_PROMPT = """你是一位技术面试官。请针对当前项目
 {action}"""
 
 
+INTERVIEW_FEEDBACK_CONTEXT = """\n\n以下 JSON 数组记录候选人以往对模拟面试的反馈，最近的在前。
+{feedback}
+
+结合当前项目和岗位，参考反馈调整提问重点、难度和追问方式。
+反馈冲突时，优先采用本轮的明确要求，其次采用较新的反馈。继续按本轮出题任务输出一个问题。"""
+
+
 INTERVIEW_PROJECT_CONTEXT = """当前项目「{project_name}」
 
 <project_details>

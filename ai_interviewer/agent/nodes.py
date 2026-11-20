@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from contextvars import ContextVar
 
@@ -10,7 +11,8 @@ from openai import OpenAI
 
 from ai_interviewer.agent.project_question import parse_projects
 from ai_interviewer.agent.prompts import (
-    INTERVIEW_PROJECT_CONTEXT, INTERVIEW_SYSTEM_PROMPT, PROJECT_EXTRACTION_PROMPT,
+    INTERVIEW_FEEDBACK_CONTEXT, INTERVIEW_PROJECT_CONTEXT, INTERVIEW_SYSTEM_PROMPT,
+    PROJECT_EXTRACTION_PROMPT,
 )
 from ai_interviewer.agent.state import InterviewState
 
@@ -89,8 +91,14 @@ def _generate_question(state: InterviewState, *, follow_up: bool) -> dict:
             previous_questions = "\n".join(f"- {record['question']}" for record in main_records)
             project_context += f"\n\n<previous_main_questions>\n{previous_questions}\n</previous_main_questions>"
         project_context += f"\n\n{action}"
+    system_prompt = INTERVIEW_SYSTEM_PROMPT.format(action=action)
+    feedback_history = state.get("feedback_history")
+    if feedback_history:
+        system_prompt += INTERVIEW_FEEDBACK_CONTEXT.format(
+            feedback=json.dumps(feedback_history, ensure_ascii=False),
+        )
     messages = [
-        SystemMessage(content=INTERVIEW_SYSTEM_PROMPT.format(action=action)),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=project_context),
         *topic_messages,
     ]

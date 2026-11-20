@@ -47,6 +47,7 @@ class InterviewGraphAgent:
         self, session_id: str, resume_text: str, candidate_name: str = "", *,
         target_position: str = "", jd_position_name: str = "", jd_raw_text: str = "",
         custom_prompt: str = "", resume_projects: str = "",
+        feedback_history: list[str] | None = None,
     ) -> dict:
         projects_text = resume_projects.strip() or extract_project_details(resume_text)
         if not projects_text:
@@ -55,6 +56,7 @@ class InterviewGraphAgent:
             "messages": [], "resume_projects": projects_text, "candidate_name": candidate_name,
             "target_position": target_position, "jd_position_name": jd_position_name,
             "jd_raw_text": jd_raw_text, "custom_prompt": custom_prompt,
+            "feedback_history": list(feedback_history or []),
             "projects": [], "project_details": [], "project_index": 0,
             "main_question_number": 1, "round_number": 1, "main_question": "",
             "question_history": [], "question_count": 0, "pending_question": "", "is_finished": False,

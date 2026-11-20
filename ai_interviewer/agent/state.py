@@ -35,3 +35,4 @@ class InterviewState(TypedDict):
     base_url: str
     model: str
     custom_prompt: str
+    feedback_history: list[str]

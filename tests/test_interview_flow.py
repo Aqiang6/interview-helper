@@ -3,6 +3,8 @@ from collections import Counter
 import json
 import threading
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import httpx
@@ -250,6 +252,48 @@ class InterviewApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(web._sessions[sid].get_session(sid)["jd_raw_text"], position.raw_text)
             sid, _ = await self.start(custom_jd_name="自定义岗位", custom_jd_text=JD)
             self.assertEqual(web._sessions[sid].get_session(sid)["jd_raw_text"], JD)
+
+    async def test_saved_feedback_is_reused_in_later_sessions_for_the_same_browser(self):
+        older_feedback, newer_feedback = "多问检索质量。", "多追问排序指标。"
+        with TemporaryDirectory() as directory, patch.object(
+            web.interview_feedback, "_DB_PATH", Path(directory) / "feedback.sqlite3",
+        ):
+            sid, start = await self.start()
+            round_id = start.json()["feedback_round_id"]
+            for feedback in ("多问缓存。", older_feedback, older_feedback):
+                response = await self.client.post("/api/interview-feedback", json={
+                    "round_id": round_id, "feedback": feedback,
+                })
+                self.assertEqual(response.json(), {"status": "saved"})
+            web._sessions.pop(sid)
+
+            sid, start = await self.start()
+            response = await self.client.post("/api/interview-feedback", json={
+                "round_id": start.json()["feedback_round_id"], "feedback": newer_feedback,
+            })
+            self.assertEqual(response.json(), {"status": "saved"})
+            web._sessions.pop(sid)
+
+            sid, _ = await self.start()
+            with patch.object(nodes, "_call_llm", side_effect=fake_llm) as llm:
+                for path, payload in [
+                    ("/api/first-question-stream", {}),
+                    ("/api/chat-stream", {"answer": "用了混合检索"}),
+                ]:
+                    response = await self.client.post(path, json={"session_id": sid, **payload})
+                    self.assertEqual(response.status_code, 200)
+                    self.assertNotIn('"type": "error"', response.text)
+                    system_message = llm.call_args.args[1][0]
+                    self.assertEqual(system_message["role"], "system")
+                    self.assertIn(json.dumps([newer_feedback, older_feedback], ensure_ascii=False), system_message["content"])
+                    self.assertNotIn("多问缓存。", system_message["content"])
+
+                self.client.cookies.clear()
+                other_sid, _ = await self.start()
+                response = await self.client.post("/api/first-question", json={"session_id": other_sid})
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn(newer_feedback, llm.call_args.args[1][0]["content"])
+                self.assertNotIn(older_feedback, llm.call_args.args[1][0]["content"])
 
     async def test_sse_scopes_projects_and_reports_committed_question_history(self):
         sid, _ = await self.start(custom_jd_name="自定义岗位", custom_jd_text=JD)

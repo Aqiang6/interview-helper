@@ -12,15 +12,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import sys
 import time
 from pathlib import Path
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from ai_interviewer import interview_feedback
 from ai_interviewer.agent import InterviewGraphAgent
 from ai_interviewer.agent.nodes import QUESTIONS_PER_PROJECT, interview_progress
 from ai_interviewer.jd_engine.jd_loader import create_custom_position, get_position, list_positions
@@ -34,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _agent = InterviewGraphAgent(api_key="")
 _sessions: dict[str, InterviewGraphAgent] = {}
+_FEEDBACK_COOKIE = "interview_feedback_browser"
 
 # ══════════════════════════════════════════
 #  FastAPI 应用
@@ -88,6 +92,13 @@ def _get_agent(session_id: str) -> InterviewGraphAgent:
     if session_id not in _sessions:
         _sessions[session_id] = InterviewGraphAgent(api_key="")
     return _sessions[session_id]
+
+
+def _feedback_browser_id(request: Request) -> str | None:
+    try:
+        return UUID(request.cookies.get(_FEEDBACK_COOKIE, "")).hex
+    except ValueError:
+        return None
 
 
 # ═══════════════════════════════════════════
@@ -228,13 +239,13 @@ async def api_delete_saved_resume(hash: str):
 
 
 @app.post("/api/start-interview")
-async def api_start_interview(request: Request):
+async def api_start_interview(request: Request, response: Response):
     """开始面试（支持前端选择岗位或自定义 JD，后端自动注入）
 
     参数说明：
     - target_position: 预置岗位 ID（从 /api/positions 获取）
     - custom_jd_name + custom_jd_text: 自定义岗位（用户直接填写 JD 文本）
-    - custom_prompt: "再来一次"时的定向调整需求，注入面试官系统提示词
+    - custom_prompt: 仅对本轮生效的额外面试要求
     - resume_text: 简历原文（用于项目追问参考）
     """
     data = await request.json()
@@ -281,22 +292,55 @@ async def api_start_interview(request: Request):
             raise HTTPException(status_code=500, detail=f"JD 解析失败: {str(e)}")
 
     session_id = data.get("session_id") or "session_1"
+    browser_id = _feedback_browser_id(request)
+    feedback_history = []
+    if browser_id:
+        try:
+            feedback_history = await asyncio.to_thread(interview_feedback.recent_feedback, browser_id)
+        except (OSError, sqlite3.Error) as exc:
+            logger.exception("读取面试反馈失败")
+            raise HTTPException(status_code=503, detail="读取面试反馈失败，请重试") from exc
     agent = InterviewGraphAgent(api_key=api_key, base_url=base_url, model=model)
     try:
         agent.create_session(
             session_id=session_id, resume_text=resume_text, candidate_name=candidate_name,
             target_position=target_position, jd_position_name=jd_position_name,
             jd_raw_text=jd_raw_text, custom_prompt=custom_prompt, resume_projects=resume_projects,
+            feedback_history=feedback_history,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _sessions[session_id] = agent
+    response.set_cookie(
+        _FEEDBACK_COOKIE, browser_id or uuid4().hex, max_age=365 * 24 * 60 * 60,
+        httponly=True, secure=request.url.scheme == "https", samesite="lax",
+    )
     return {
         "session_id": session_id,
+        "feedback_round_id": uuid4().hex,
         "status": "ready",
         "position": {"id": target_position, "name": jd_position_name} if target_position else None,
         "questions_per_project": QUESTIONS_PER_PROJECT,
     }
+
+
+@app.post("/api/interview-feedback")
+async def api_interview_feedback(request: Request, round_id: UUID = Body(), feedback: str = Body()):
+    """保存本轮结束后的反馈。同一轮重新保存时更新原记录。"""
+    browser_id = _feedback_browser_id(request)
+    if browser_id is None:
+        raise HTTPException(status_code=400, detail="请先开始一轮面试")
+    feedback = feedback.strip()
+    if not feedback:
+        raise HTTPException(status_code=400, detail="请输入面试反馈")
+    if len(feedback) > interview_feedback.MAX_FEEDBACK_LENGTH:
+        raise HTTPException(status_code=400, detail=f"面试反馈最多 {interview_feedback.MAX_FEEDBACK_LENGTH} 字")
+    try:
+        await asyncio.to_thread(interview_feedback.save_feedback, browser_id, round_id.hex, feedback)
+    except (OSError, sqlite3.Error) as exc:
+        logger.exception("保存面试反馈失败")
+        raise HTTPException(status_code=503, detail="保存面试反馈失败，请重试") from exc
+    return {"status": "saved"}
 
 
 @app.post("/api/chat")
